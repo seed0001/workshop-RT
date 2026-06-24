@@ -175,6 +175,17 @@
                         <label for="chat-topic"><i class="fa-solid fa-lightbulb"></i> Discussion Topic</label>
                         <input type="text" id="chat-topic" placeholder="e.g. Discuss the future of artificial intelligence by 2050" value="Explain why space exploration is essential to human survival.">
                     </div>
+                    <div class="story-mode-group">
+                        <label class="story-toggle" for="story-mode-toggle">
+                            <input type="checkbox" id="story-mode-toggle">
+                            <span class="story-toggle-track"><span class="story-toggle-thumb"></span></span>
+                            <span class="story-toggle-label"><i class="fa-solid fa-clapperboard"></i> Story Mode</span>
+                        </label>
+                        <div class="narrator-voice-wrap" id="narrator-voice-wrap" style="display:none;">
+                            <label for="narrator-voice"><i class="fa-solid fa-feather-pointed"></i> Narrator voice</label>
+                            <select id="narrator-voice"></select>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Group Chat Controls -->
@@ -233,6 +244,6 @@
     <audio id="preview-tts-audio" style="display: none;"></audio>
 
     <!-- Main JavaScript -->
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=4"></script>
 </body>
 </html>

@@ -12,6 +12,8 @@ const state = {
     editingPersonaId: null,
     lastTopic: null,
     consecutiveErrors: 0,
+    turnTimer: null,        // pending setTimeout handle for the next turn
+    stopRequested: false,   // set on pause so an in-flight turn bails out
 };
 
 // How many recent messages to send to the model each turn. Keeps requests
@@ -30,6 +32,9 @@ const voiceSelect = document.getElementById("persona-voice");
 const voiceSearchInput = document.getElementById("voice-search");
 const voiceGenderFilter = document.getElementById("voice-gender-filter");
 const previewVoiceBtn = document.getElementById("preview-voice-btn");
+const storyModeToggle = document.getElementById("story-mode-toggle");
+const narratorVoiceSelect = document.getElementById("narrator-voice");
+const narratorVoiceWrap = document.getElementById("narrator-voice-wrap");
 const personaForm = document.getElementById("persona-form");
 const personasListEl = document.getElementById("personas-list");
 const personaCountEl = document.getElementById("persona-count");
@@ -208,6 +213,7 @@ async function fetchVoices() {
             state.voices = data.voices;
             setIndicatorStatus(voicesStatusEl, "success", "Voices: Connected");
             filterAndPopulateVoices();
+            populateNarratorVoices();
         } else {
             throw new Error("Failed to load voices");
         }
@@ -266,6 +272,32 @@ function filterAndPopulateVoices() {
     } else if (filtered.length > 0) {
         voiceSelect.value = filtered[0].ShortName;
     }
+}
+
+// Populate the Story Mode narrator voice dropdown (English voices, deep/narrator
+// styles surfaced first as sensible defaults).
+function populateNarratorVoices() {
+    if (!narratorVoiceSelect) return;
+    const english = state.voices.filter(v => v.Language.startsWith("en"));
+    english.sort((a, b) => a.FriendlyName.localeCompare(b.FriendlyName));
+
+    narratorVoiceSelect.innerHTML = "";
+    english.forEach(v => {
+        const option = document.createElement("option");
+        option.value = v.ShortName;
+        option.textContent = `${v.FriendlyName} (${v.Gender})`;
+        narratorVoiceSelect.appendChild(option);
+    });
+
+    // Prefer a warm, narrator-ish default if available.
+    const preferred = ["en-GB-RyanNeural", "en-US-GuyNeural", "en-US-BrianNeural", "en-US-AndrewNeural"];
+    for (const pref of preferred) {
+        if (english.some(v => v.ShortName === pref)) {
+            narratorVoiceSelect.value = pref;
+            return;
+        }
+    }
+    if (english.length > 0) narratorVoiceSelect.value = english[0].ShortName;
 }
 
 // Helper to set header status indicators
@@ -553,6 +585,11 @@ function setupEventListeners() {
         document.getElementById("temp-val").textContent = e.target.value;
     });
 
+    // Story Mode toggle — reveal the narrator voice picker when enabled
+    storyModeToggle.addEventListener("change", () => {
+        narratorVoiceWrap.style.display = storyModeToggle.checked ? "" : "none";
+    });
+
     // Voice search and filters
     voiceSearchInput.addEventListener("input", filterAndPopulateVoices);
     voiceGenderFilter.addEventListener("change", filterAndPopulateVoices);
@@ -622,12 +659,8 @@ function setupEventListeners() {
         if (e.key === "Enter") injectUserMessage();
     });
 
-    // Audio end callback
-    globalAudio.addEventListener("ended", onAudioFinished);
-    globalAudio.addEventListener("error", (e) => {
-        console.error("Audio playback error:", e);
-        onAudioFinished(); // Skip on failure
-    });
+    // NOTE: audio sequencing is handled per-clip by playClip() (promise-based),
+    // so we no longer wire a persistent "ended" -> advance listener here.
 }
 
 // Start Group Discussion Loop
@@ -643,9 +676,10 @@ function startDiscussion() {
     state.lastTopic = currentTopic;
 
     state.isRunning = true;
+    state.stopRequested = false;
     startBtn.classList.add("hidden");
     pauseBtn.classList.remove("hidden");
-    
+
     // Clear welcome message if first message
     const welcomeEl = chatFeedEl.querySelector(".chat-feed-welcome");
     if (welcomeEl) welcomeEl.remove();
@@ -656,13 +690,23 @@ function startDiscussion() {
 // Pause Group Discussion
 function pauseDiscussion() {
     state.isRunning = false;
+    state.stopRequested = true;
+
+    // Cancel any pending next-turn timer and stop current audio so an in-flight
+    // turn unblocks promptly (playClip resolves on the audio "pause" event).
+    if (state.turnTimer) {
+        clearTimeout(state.turnTimer);
+        state.turnTimer = null;
+    }
+    try { globalAudio.pause(); } catch (e) {}
+
     startBtn.classList.remove("hidden");
     pauseBtn.classList.add("hidden");
-    
+
     const statusMsgEl = activeSpeakerStatusEl.querySelector(".status-msg");
     const spinner = activeSpeakerStatusEl.querySelector(".status-spinner");
     spinner.classList.add("hidden");
-    
+
     if (state.personas.length >= 2) {
         statusMsgEl.textContent = "Discussion paused.";
     }
@@ -706,18 +750,23 @@ async function speakManualTurn(persona) {
     if (idx === -1) return;
     
     state.currentSpeakerIndex = idx;
-    
+    state.stopRequested = false; // an explicit manual turn should run to completion
+
     // Clear welcome
     const welcomeEl = chatFeedEl.querySelector(".chat-feed-welcome");
     if (welcomeEl) welcomeEl.remove();
 
     await processSpeakerTurn(persona);
+    finishTurnCleanup();
 }
 
 // Main turn advancing logic
 async function triggerNextTurn(isSingleStep = false) {
     if (state.audioPlaying) return;
     if (!state.isRunning && !isSingleStep) return;
+
+    // A manual single step should run even if a pause was previously requested.
+    if (isSingleStep) state.stopRequested = false;
 
     // Pick next speaker index
     const mode = turnTakingModeSelect.value;
@@ -774,60 +823,42 @@ async function triggerNextTurn(isSingleStep = false) {
     state.currentSpeakerIndex = nextIdx;
     const speaker = state.personas[nextIdx];
     await processSpeakerTurn(speaker);
+    finishTurnCleanup();
+
+    // Auto-advance to the next speaker unless this was a one-off step, the user
+    // paused, or an error handler stopped the session.
+    if (state.isRunning && !isSingleStep && !state.stopRequested) {
+        state.turnTimer = setTimeout(() => triggerNextTurn(), 1200); // breathing room
+    }
 }
 
-// Process a single speaker's chat turn via FastAPI
+// Process a single speaker's turn. In Story Mode this is a sequence:
+//   narrator "before" beat  ->  the character's spoken line  ->  narrator "after" beat
+// each one voiced and awaited in order. With Story Mode off it's just the line.
 async function processSpeakerTurn(speaker) {
     state.audioPlaying = true;
-    
-    // UI Visual feedback
     highlightActiveSpeaker(speaker.id);
-    
-    const statusMsgEl = activeSpeakerStatusEl.querySelector(".status-msg");
-    const spinner = activeSpeakerStatusEl.querySelector(".status-spinner");
-    statusMsgEl.textContent = `${speaker.name} is thinking...`;
-    spinner.classList.remove("hidden");
 
-    // Construct request payload
-    const otherNames = state.personas
-        .filter(p => p.id !== speaker.id)
-        .map(p => p.name);
-        
-    // Format history — only send the most recent slice so requests stay
-    // bounded over very long sessions (full transcript remains on screen).
-    const historyPayload = state.chatHistory.slice(-HISTORY_WINDOW).map(h => ({
-        sender: h.sender,
-        content: h.content,
-        is_user: h.is_user
-    }));
-
-    // Inject topic into the context if history is empty
-    const topic = chatTopicInput.value.trim() || "A casual chat.";
-    const fullSystemPrompt = `${speaker.prompt}\n\nThe current discussion topic is: "${topic}". Make sure to address this topic or comment on what other panelists have said.`;
+    const storyOn = storyModeToggle && storyModeToggle.checked;
+    const narratorVoice = narratorVoiceSelect ? narratorVoiceSelect.value : null;
 
     try {
-        const response = await fetch("/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                model: speaker.model,
-                persona_name: speaker.name,
-                system_prompt: fullSystemPrompt,
-                other_participants: otherNames,
-                messages: historyPayload,
-                voice: speaker.voice,
-                temperature: speaker.temp
-            })
-        });
-
-        if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.detail || "Server error");
+        // 1. Narrator "before" beat — sets the scene and leads into the line.
+        if (storyOn && !state.stopRequested) {
+            setTurnStatus(`Narrator sets the scene for ${speaker.name}...`, true);
+            const before = await fetchNarration(speaker, "before", narratorVoice);
+            if (before && before.text) {
+                pushNarration(before);
+                renderNarratorBubble(before);
+                await playClip(before.audio_url, before.text);
+            }
         }
+        if (state.stopRequested) return;
 
-        const data = await response.json();
-        
-        // Add to history
+        // 2. The character's spoken line.
+        setTurnStatus(`${speaker.name} is thinking...`, true);
+        const data = await fetchSpeakerLine(speaker);
+
         const msgObject = {
             sender: speaker.name,
             content: data.text,
@@ -840,93 +871,197 @@ async function processSpeakerTurn(speaker) {
         };
         state.chatHistory.push(msgObject);
         state.consecutiveErrors = 0; // healthy turn — reset the failure streak
-
-        // Display in feed
         renderMessageBubble(msgObject);
-        
-        // Speak
-        if (data.audio_url) {
-            statusMsgEl.textContent = `${speaker.name} is speaking...`;
-            spinner.classList.add("hidden");
-            
-            // Set audio source and play
-            globalAudio.src = data.audio_url;
-            
-            // Apply speaking highlights to the message bubble
-            const messageCards = document.querySelectorAll(".message-card");
-            const lastCard = messageCards[messageCards.length - 1];
-            if (lastCard) {
-                lastCard.classList.add("speaking-bubble");
-                lastCard.style.setProperty("--speaker-glow", `${speaker.color}35`);
-                lastCard.style.setProperty("--speaker-border", speaker.color);
-            }
-            
-            // Animate waveform on the sidebar card
-            const activeCard = document.getElementById(`persona-card-${speaker.id}`);
-            if (activeCard) {
-                activeCard.querySelector(".waveform-container").classList.remove("hidden");
-            }
-            
-            await globalAudio.play();
-        } else {
-            // If no voice synthesized (or error), wait 3-4 seconds reading delay, then continue
-            statusMsgEl.textContent = `${speaker.name} finished.`;
-            spinner.classList.add("hidden");
-            
-            setTimeout(() => {
-                onAudioFinished();
-            }, Math.max(3000, data.text.length * 50)); // reading pace delay
-        }
 
+        setTurnStatus(`${speaker.name} is speaking...`, false);
+        applySpeakingVisuals(speaker);
+        await playClip(data.audio_url, data.text);
+        clearSpeakingVisuals();
+        if (state.stopRequested) return;
+
+        // 3. Narrator "after" beat — the character's reaction once they finish.
+        if (storyOn && !state.stopRequested) {
+            setTurnStatus(`Narrator follows ${speaker.name}'s reaction...`, true);
+            const after = await fetchNarration(speaker, "after", narratorVoice);
+            if (after && after.text) {
+                pushNarration(after);
+                renderNarratorBubble(after);
+                await playClip(after.audio_url, after.text);
+            }
+        }
     } catch (error) {
-        console.error("Error processing speaker turn:", error);
-        state.consecutiveErrors++;
-        spinner.classList.add("hidden");
-
-        // Recover playing state so the queue isn't locked
+        handleTurnError(speaker, error);
+    } finally {
         state.audioPlaying = false;
-
-        if (state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            // Too many failures in a row — something is genuinely wrong (Ollama
-            // down, etc.). Stop and surface it instead of spinning forever.
-            statusMsgEl.textContent = `Stopped after ${state.consecutiveErrors} errors: ${error.message}`;
-            renderSystemErrorMsg(`System: Paused after ${state.consecutiveErrors} consecutive failures. Last error from ${speaker.name}: ${error.message}`);
-            pauseDiscussion();
-            return;
-        }
-
-        // Transient hiccup — note it and keep the session alive by skipping to
-        // the next speaker after a short backoff, so a marathon run survives.
-        statusMsgEl.textContent = `${speaker.name} stumbled, skipping... (${error.message})`;
-        renderSystemErrorMsg(`System: ${speaker.name} failed this turn (${error.message}). Skipping ahead.`);
-
-        if (state.isRunning) {
-            setTimeout(() => triggerNextTurn(), 2000);
-        }
     }
 }
 
-// Callback when speaking audio ends
-function onAudioFinished() {
-    state.audioPlaying = false;
-    
-    // Remove speaking bubble classes
-    document.querySelectorAll(".message-card").forEach(c => c.classList.remove("speaking-bubble"));
-    
-    // Hide waveforms
-    document.querySelectorAll(".persona-card").forEach(c => {
-        c.querySelector(".waveform-container").classList.add("hidden");
+// Bounded recent-history payload shared by speaker lines and narration, so
+// requests stay small over very long sessions (full transcript stays on screen).
+function recentHistoryPayload() {
+    return state.chatHistory.slice(-HISTORY_WINDOW).map(h => ({
+        sender: h.sender,
+        content: h.content,
+        is_user: h.is_user
+    }));
+}
+
+// Request one persona's spoken line from the backend. Throws on failure so the
+// turn's error handler can count it toward the consecutive-error breaker.
+async function fetchSpeakerLine(speaker) {
+    const otherNames = state.personas.filter(p => p.id !== speaker.id).map(p => p.name);
+    const topic = chatTopicInput.value.trim() || "A casual chat.";
+    const fullSystemPrompt = `${speaker.prompt}\n\nThe current discussion topic is: "${topic}". Make sure to address this topic or comment on what other panelists have said.`;
+
+    const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            model: speaker.model,
+            persona_name: speaker.name,
+            system_prompt: fullSystemPrompt,
+            other_participants: otherNames,
+            messages: recentHistoryPayload(),
+            voice: speaker.voice,
+            temperature: speaker.temp
+        })
     });
-
-    const statusMsgEl = activeSpeakerStatusEl.querySelector(".status-msg");
-    statusMsgEl.textContent = "Waiting...";
-
-    // If running, trigger next speaker turn
-    if (state.isRunning) {
-        setTimeout(() => {
-            triggerNextTurn();
-        }, 1200); // 1.2 second breathing delay between speakers
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || "Server error");
     }
+    return await response.json();
+}
+
+// Request a narrator stage direction. Best-effort: on any failure we return null
+// and simply skip the beat, so narration problems never break the discussion.
+async function fetchNarration(speaker, phase, narratorVoice) {
+    try {
+        const topic = chatTopicInput.value.trim() || "A casual chat.";
+        const response = await fetch("/api/narrate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model: speaker.model,
+                character: speaker.name,
+                phase: phase,
+                topic: topic,
+                participants: state.personas.map(p => p.name),
+                messages: recentHistoryPayload(),
+                voice: narratorVoice || null,
+                temperature: 0.9
+            })
+        });
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (e) {
+        console.error("Narration failed:", e);
+        return null;
+    }
+}
+
+// Record a narrator beat in history so the personas are aware of the staged
+// action (they'll see e.g. "Narrator: Alex glares at Tom" and can react to it).
+function pushNarration(narr) {
+    state.chatHistory.push({
+        sender: "Narrator",
+        content: narr.text,
+        is_user: false,
+        isNarrator: true,
+        audioUrl: narr.audio_url
+    });
+}
+
+// Play one audio clip to completion. Resolves on "ended"/"error", and also on
+// "pause" so a user pause unblocks the turn immediately. With no URL it falls
+// back to a timed reading delay.
+function playClip(url, fallbackText) {
+    return new Promise((resolve) => {
+        if (!url) { readingDelay(fallbackText).then(resolve); return; }
+        let settled = false;
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            globalAudio.removeEventListener("ended", done);
+            globalAudio.removeEventListener("error", done);
+            globalAudio.removeEventListener("pause", done);
+            resolve();
+        };
+        globalAudio.addEventListener("ended", done);
+        globalAudio.addEventListener("error", done);
+        globalAudio.addEventListener("pause", done);
+        globalAudio.src = url;
+        const p = globalAudio.play();
+        if (p && p.catch) p.catch(() => done());
+    });
+}
+
+// Timed delay used when there's no audio (TTS offline). Resolves early if the
+// user pauses so the session stops responsively.
+function readingDelay(text) {
+    const total = Math.max(2500, (text ? text.length : 0) * 45);
+    const start = Date.now();
+    return new Promise(resolve => {
+        const tick = () => {
+            if (state.stopRequested || Date.now() - start >= total) { resolve(); return; }
+            setTimeout(tick, 150);
+        };
+        tick();
+    });
+}
+
+// Status line helper
+function setTurnStatus(msg, spinnerOn) {
+    const statusMsgEl = activeSpeakerStatusEl.querySelector(".status-msg");
+    const spinner = activeSpeakerStatusEl.querySelector(".status-spinner");
+    if (statusMsgEl) statusMsgEl.textContent = msg;
+    if (spinner) spinner.classList.toggle("hidden", !spinnerOn);
+}
+
+// Speaking visuals on the active message bubble + sidebar waveform
+function applySpeakingVisuals(speaker) {
+    const messageCards = document.querySelectorAll(".message-card");
+    const lastCard = messageCards[messageCards.length - 1];
+    if (lastCard) {
+        lastCard.classList.add("speaking-bubble");
+        lastCard.style.setProperty("--speaker-glow", `${speaker.color}35`);
+        lastCard.style.setProperty("--speaker-border", speaker.color);
+    }
+    const activeCard = document.getElementById(`persona-card-${speaker.id}`);
+    if (activeCard) {
+        const w = activeCard.querySelector(".waveform-container");
+        if (w) w.classList.remove("hidden");
+    }
+}
+
+function clearSpeakingVisuals() {
+    document.querySelectorAll(".message-card").forEach(c => c.classList.remove("speaking-bubble"));
+    document.querySelectorAll(".persona-card").forEach(c => {
+        const w = c.querySelector(".waveform-container");
+        if (w) w.classList.add("hidden");
+    });
+}
+
+// Per-turn cleanup run by the loop after a turn fully resolves.
+function finishTurnCleanup() {
+    clearSpeakingVisuals();
+    if (state.isRunning) setTurnStatus("Waiting...", false);
+}
+
+// Centralized turn error handling: skip transient failures to keep a marathon
+// run alive; stop only after too many failures in a row.
+function handleTurnError(speaker, error) {
+    console.error("Error processing speaker turn:", error);
+    state.consecutiveErrors++;
+
+    if (state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        setTurnStatus(`Stopped after ${state.consecutiveErrors} errors: ${error.message}`, false);
+        renderSystemErrorMsg(`System: Paused after ${state.consecutiveErrors} consecutive failures. Last error from ${speaker.name}: ${error.message}`);
+        pauseDiscussion();
+        return;
+    }
+    setTurnStatus(`${speaker.name} stumbled, skipping... (${error.message})`, false);
+    renderSystemErrorMsg(`System: ${speaker.name} failed this turn (${error.message}). Skipping ahead.`);
 }
 
 // Highlight Active speaker card in sidebar
@@ -1053,6 +1188,38 @@ function playSingleMessageAudio(msg) {
     
     globalAudio.src = msg.audioUrl;
     globalAudio.play();
+}
+
+// Render a Story Mode narrator stage direction in the feed (italic, full-width).
+function renderNarratorBubble(narr) {
+    const el = document.createElement("div");
+    el.className = "narrator-direction";
+
+    const icon = document.createElement("i");
+    icon.className = "fa-solid fa-clapperboard narrator-icon";
+
+    const text = document.createElement("span");
+    text.className = "narrator-text";
+    text.textContent = narr.text;
+
+    el.appendChild(icon);
+    el.appendChild(text);
+
+    if (narr.audio_url) {
+        const btn = document.createElement("button");
+        btn.className = "narrator-replay";
+        btn.title = "Replay narration";
+        btn.innerHTML = '<i class="fa-solid fa-volume-high"></i>';
+        btn.addEventListener("click", () => {
+            globalAudio.pause();
+            globalAudio.src = narr.audio_url;
+            globalAudio.play();
+        });
+        el.appendChild(btn);
+    }
+
+    chatFeedEl.appendChild(el);
+    chatFeedEl.scrollTop = chatFeedEl.scrollHeight;
 }
 
 // Render System Error Message in feed

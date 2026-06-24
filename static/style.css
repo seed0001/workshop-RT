@@ -1090,3 +1090,129 @@ input[type="range"]::-webkit-slider-thumb:hover {
         height: 600px;
     }
 }
+
+/* ============================================================
+   Story Mode: toggle + narrator voice picker
+   ============================================================ */
+.story-mode-group {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 0.6rem;
+}
+
+.story-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+/* Hide the native checkbox; we render a custom track + thumb */
+.story-toggle input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.story-toggle-track {
+    position: relative;
+    width: 38px;
+    height: 20px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.3);
+    transition: background 0.2s ease;
+    flex: 0 0 auto;
+}
+
+.story-toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s ease;
+}
+
+.story-toggle input:checked + .story-toggle-track {
+    background: linear-gradient(135deg, var(--primary), hsl(260, 89%, 60%));
+}
+
+.story-toggle input:checked + .story-toggle-track .story-toggle-thumb {
+    transform: translateX(18px);
+}
+
+.story-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-weight: 600;
+}
+
+.narrator-voice-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.narrator-voice-wrap select {
+    padding: 0.35rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: rgba(15, 23, 42, 0.6);
+    color: var(--text-secondary);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    max-width: 220px;
+}
+
+/* ============================================================
+   Story Mode: narrator stage directions in the feed
+   ============================================================ */
+.narrator-direction {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    width: 100%;
+    margin: 0.4rem 0;
+    padding: 0.7rem 1rem;
+    border-left: 3px solid hsl(45, 90%, 60%);
+    background: linear-gradient(90deg, rgba(234, 179, 8, 0.10), rgba(234, 179, 8, 0.02));
+    border-radius: var(--radius-sm);
+    font-style: italic;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.narrator-icon {
+    color: hsl(45, 90%, 60%);
+    margin-top: 0.15rem;
+    flex: 0 0 auto;
+}
+
+.narrator-text {
+    flex: 1 1 auto;
+}
+
+.narrator-replay {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0.1rem 0.3rem;
+    border-radius: 4px;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+
+.narrator-replay:hover {
+    color: hsl(45, 90%, 65%);
+    background: rgba(234, 179, 8, 0.12);
+}

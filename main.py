@@ -65,6 +65,16 @@ class ChatRequest(BaseModel):
     voice: Optional[str] = None
     temperature: float = 0.7
 
+class NarrateRequest(BaseModel):
+    model: str
+    character: str               # who the stage direction is about
+    phase: str                   # "before" (leading into their line) or "after" (their reaction)
+    topic: str = ""
+    participants: List[str] = []
+    messages: List[Message] = []
+    voice: Optional[str] = None
+    temperature: float = 0.85
+
 def clean_text_for_tts(text: str) -> str:
     """Removes text in asterisks, underscores, or brackets (actions/thoughts) for speech synthesis."""
     # Remove asterisks and text between them: *chuckles* -> ""
@@ -202,6 +212,88 @@ async def chat_turn(req: ChatRequest):
         "text": response_text,
         "audio_url": audio_url
     }
+
+@app.post("/api/narrate")
+async def narrate_turn(req: NarrateRequest):
+    """Produces a single third-person stage direction (Story Mode narrator) and
+    synthesizes it with the narrator voice. Used before and after each character
+    speaks to give the discussion a screenplay/stage feel."""
+    others = ", ".join(req.participants) if req.participants else "the others in the room"
+
+    if req.phase == "before":
+        phase_instruction = (
+            f"Describe what {req.character} physically does right now as they take focus and prepare to speak — "
+            f"their movement, posture, expression, or where they direct their attention — reacting to the moment that just occurred."
+        )
+    else:
+        phase_instruction = (
+            f"Describe {req.character}'s physical reaction, body language, or gesture in the beat immediately after they finished speaking."
+        )
+
+    system_prompt = (
+        "You are the Narrator and stage director of an unfolding scene, like the directions in a screenplay. "
+        "You NEVER speak any character's dialogue and you NEVER use quotation marks. "
+        "You write ONLY third-person, present-tense physical stage directions: movement, posture, facial expressions, glances, and blocking. "
+        "Do not narrate inner thoughts or speech — only observable action. "
+        f"The scene revolves around: \"{req.topic}\". The characters present are: {others}, and {req.character}. "
+        "Keep it to ONE concise, cinematic sentence (two at most). "
+        + phase_instruction
+    )
+
+    ollama_messages = [{"role": "system", "content": system_prompt}]
+    for msg in req.messages:
+        prefix = "User" if msg.is_user else msg.sender
+        ollama_messages.append({"role": "user", "content": f"{prefix}: {msg.content}"})
+    ollama_messages.append({
+        "role": "user",
+        "content": f"Write the stage direction for {req.character} now. Output only the stage direction itself — no name label, no quotation marks."
+    })
+
+    narration_text = ""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            payload = {
+                "model": req.model,
+                "messages": ollama_messages,
+                "options": {"temperature": req.temperature},
+                "stream": False,
+            }
+            logger.info(f"Narrating '{req.phase}' beat for '{req.character}' using model '{req.model}'")
+            res = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            if res.status_code == 200:
+                narration_text = res.json().get("message", {}).get("content", "").strip()
+            else:
+                raise HTTPException(status_code=res.status_code, detail=f"Ollama returned error: {res.text}")
+    except httpx.RequestError as e:
+        logger.error(f"Narration request to Ollama failed: {e}")
+        raise HTTPException(status_code=503, detail="Ollama server connection failed.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Narration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Clean up: strip wrapping quotes/asterisks the model may add around directions.
+    narration_text = narration_text.strip().strip('*').strip()
+    if len(narration_text) > 1 and narration_text.startswith('"') and narration_text.endswith('"'):
+        narration_text = narration_text[1:-1].strip()
+
+    # Synthesize the narrator's voice.
+    audio_url = None
+    if req.voice and narration_text:
+        tts_text = clean_text_for_tts(narration_text)
+        if tts_text:
+            try:
+                audio_filename = f"narr_{uuid.uuid4()}.mp3"
+                audio_path = os.path.join(AUDIO_DIR, audio_filename)
+                communicate = edge_tts.Communicate(tts_text, req.voice)
+                await communicate.save(audio_path)
+                audio_url = f"/static/audio/{audio_filename}"
+            except Exception as e:
+                logger.error(f"Narrator TTS synthesis failed: {e}")
+                audio_url = None
+
+    return {"text": narration_text, "audio_url": audio_url}
 
 @app.post("/api/tts")
 async def generate_tts(text: str, voice: str):
