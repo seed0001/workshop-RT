@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aether Workshop: Dynamic Persona Studio</title>
+    <!-- Google Fonts: Outfit & Space Grotesk -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Premium Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Main Style Sheet -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-area">
+                <div class="logo-glow"></div>
+                <i class="fa-solid fa-brain logo-icon"></i>
+                <h1>Aether<span>Workshop</span></h1>
+            </div>
+            <div class="system-status">
+                <div id="ollama-status" class="status-indicator warning">
+                    <span class="indicator-dot"></span>
+                    <span class="status-text">Ollama: Connecting...</span>
+                </div>
+                <div id="voices-status" class="status-indicator warning">
+                    <span class="indicator-dot"></span>
+                    <span class="status-text">Voices: Loading...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Dashboard Grid -->
+        <main class="dashboard-grid">
+            
+            <!-- LEFT PANEL: Persona Management -->
+            <section class="panel persona-panel glass">
+                <div class="panel-header">
+                    <h2><i class="fa-solid fa-users-gear icon-gradient"></i> Persona Workshop</h2>
+                    <p class="panel-subtitle">Define and configure your debate team</p>
+                </div>
+
+                <!-- Add/Edit Persona Form -->
+                <div class="collapsible-card form-card">
+                    <div class="card-header" id="form-toggle-btn">
+                        <h3 id="form-title"><i class="fa-solid fa-user-plus"></i> Create New Persona</h3>
+                        <i class="fa-solid fa-chevron-down toggle-icon"></i>
+                    </div>
+                    <form id="persona-form" class="card-body">
+                        <input type="hidden" id="persona-id">
+                        
+                        <div class="form-row">
+                            <div class="form-group flex-2">
+                                <label for="persona-name">Name</label>
+                                <input type="text" id="persona-name" placeholder="e.g. Socrates, GLaDOS" required>
+                            </div>
+                            <div class="form-group flex-1">
+                                <label for="persona-avatar-emoji">Avatar Emoji</label>
+                                <input type="text" id="persona-avatar-emoji" placeholder="🤔" value="🤖" required>
+                            </div>
+                            <div class="form-group flex-1">
+                                <label for="persona-avatar-color">Theme</label>
+                                <div class="color-picker-wrapper">
+                                    <input type="color" id="persona-avatar-color" value="#6366f1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="persona-model">Ollama LLM Model</label>
+                            <select id="persona-model" required>
+                                <option value="" disabled selected>Select an Ollama Model</option>
+                            </select>
+                            <span class="input-tip">Choose which local LLM drives this mind</span>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="voice-search">Search Edge TTS Voice</label>
+                            <div class="voice-filter-container">
+                                <input type="text" id="voice-search" placeholder="Type language, country, or name...">
+                                <select id="voice-gender-filter">
+                                    <option value="All">All Genders</option>
+                                    <option value="Male">Male</option>
+                                    <option value="Female">Female</option>
+                                </select>
+                            </div>
+                            <select id="persona-voice" required>
+                                <option value="" disabled selected>Select Voice (English defaults loaded)</option>
+                            </select>
+                            <div class="voice-actions">
+                                <button type="button" id="preview-voice-btn" class="btn btn-secondary btn-sm">
+                                    <i class="fa-solid fa-volume-high"></i> Preview Voice
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="persona-prompt">Personality & Backstory (System Prompt)</label>
+                            <textarea id="persona-prompt" rows="4" placeholder="Describe their role, tone, knowledge depth, speech pattern, and quirk..." required></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <div class="slider-header">
+                                <label for="persona-temp">Creativity (Temperature)</label>
+                                <span id="temp-val">0.7</span>
+                            </div>
+                            <input type="range" id="persona-temp" min="0.1" max="1.2" step="0.1" value="0.7">
+                        </div>
+
+                        <div class="form-buttons">
+                            <button type="submit" id="save-persona-btn" class="btn btn-primary">
+                                <i class="fa-solid fa-floppy-disk"></i> Save Persona
+                            </button>
+                            <button type="button" id="cancel-edit-btn" class="btn btn-muted hidden">
+                                Cancel
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Active Personas List -->
+                <div class="personas-list-section">
+                    <h3>Active Panelists (<span id="persona-count">0</span>)</h3>
+                    
+                    <!-- Prebuilt Presets Quick Add -->
+                    <div class="presets-container">
+                        <span class="preset-label">Presets:</span>
+                        <button type="button" class="preset-badge" data-preset="ceo">👔 CEO</button>
+                        <button type="button" class="preset-badge" data-preset="cfo">💰 CFO</button>
+                        <button type="button" class="preset-badge" data-preset="cto">🖥️ CTO</button>
+                        <button type="button" class="preset-badge" data-preset="cmo">📣 CMO</button>
+                        <button type="button" class="preset-badge" data-preset="coo">⚙️ COO</button>
+                        <button type="button" class="preset-badge" data-preset="hr">🤝 HR</button>
+                        <button type="button" class="preset-badge" data-preset="legal">⚖️ Legal</button>
+                        <button type="button" class="preset-badge" data-preset="sales">📈 Sales</button>
+                        <button type="button" class="preset-badge" data-preset="support">🛠️ Tech Support</button>
+                    </div>
+
+                    <div id="personas-list" class="personas-grid-list">
+                        <div class="empty-state">
+                            <i class="fa-solid fa-people-arrows"></i>
+                            <p>No personas created yet.</p>
+                            <p class="sub-text">Add your first persona or click a preset above to begin!</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- RIGHT PANEL: Group Chat Arena -->
+            <section class="panel chat-panel glass">
+                <div class="panel-header chat-panel-header">
+                    <div class="header-main-title">
+                        <h2><i class="fa-solid fa-comments icon-gradient"></i> Group Discussion Arena</h2>
+                        <p class="panel-subtitle">Watch AI personalities debate or collaborate</p>
+                    </div>
+                    
+                    <div class="turn-config-pill">
+                        <label for="turn-taking-mode"><i class="fa-solid fa-shuffle"></i> Turns:</label>
+                        <select id="turn-taking-mode">
+                            <option value="round-robin">Round-Robin (Sequential)</option>
+                            <option value="random">Random Speaker</option>
+                            <option value="manual">Manual Select (Click to speak)</option>
+                            <option value="moderator-decides">AI Moderator Decides next speaker</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Chat Settings & Topic -->
+                <div class="chat-settings-bar">
+                    <div class="topic-group">
+                        <label for="chat-topic"><i class="fa-solid fa-lightbulb"></i> Discussion Topic</label>
+                        <input type="text" id="chat-topic" placeholder="e.g. Discuss the future of artificial intelligence by 2050" value="Explain why space exploration is essential to human survival.">
+                    </div>
+                </div>
+
+                <!-- Group Chat Controls -->
+                <div class="chat-controls">
+                    <div class="control-buttons">
+                        <button id="start-btn" class="btn btn-success" disabled>
+                            <i class="fa-solid fa-play"></i> Start Discussion
+                        </button>
+                        <button id="pause-btn" class="btn btn-warning hidden">
+                            <i class="fa-solid fa-pause"></i> Pause
+                        </button>
+                        <button id="step-btn" class="btn btn-info" disabled>
+                            <i class="fa-solid fa-forward-step"></i> Next Speaker Turn
+                        </button>
+                        <button id="clear-btn" class="btn btn-danger">
+                            <i class="fa-solid fa-trash-can"></i> Clear Arena
+                        </button>
+                    </div>
+                    <div class="current-turn-status" id="active-speaker-status">
+                        <i class="fa-solid fa-circle-notch fa-spin status-spinner hidden"></i>
+                        <span class="status-msg">Add at least two personas to start debating</span>
+                    </div>
+                </div>
+
+                <!-- Chat Feed -->
+                <div class="chat-feed-outer">
+                    <div id="chat-feed" class="chat-feed-inner">
+                        <!-- Messages populated here dynamically -->
+                        <div class="chat-feed-welcome">
+                            <div class="welcome-badge">
+                                <i class="fa-solid fa-bullhorn"></i>
+                            </div>
+                            <h3>Welcome to Aether Workshop</h3>
+                            <p>Once you save at least 2 personas, customize the topic above and click <strong>Start Discussion</strong>. The personas will interact with memory, responding directly to previous statements and to the moderator.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- User Message Injection -->
+                <div class="user-injection-area">
+                    <div class="input-wrapper">
+                        <div class="user-avatar-badge">👤</div>
+                        <input type="text" id="user-message-input" placeholder="Inject message as the human Moderator (e.g. 'Redirect the debate to focus on ethics')...">
+                        <button id="send-user-msg-btn" class="btn btn-primary">
+                            <i class="fa-solid fa-paper-plane"></i> Inject
+                        </button>
+                    </div>
+                </div>
+            </section>
+            
+        </main>
+    </div>
+
+    <!-- Hidden audio element for TTS playback -->
+    <audio id="global-tts-audio" style="display: none;"></audio>
+    <audio id="preview-tts-audio" style="display: none;"></audio>
+
+    <!-- Main JavaScript -->
+    <script src="/static/app.js?v=3"></script>
+</body>
+</html>
