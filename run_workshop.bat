@@ -29,8 +29,16 @@ echo.
 :: Wait 2 seconds in a background process, then open the browser automatically
 start "" cmd /c "timeout /t 2 >nul && start http://localhost:8000"
 
-:: Start Uvicorn server bound to all interfaces on port 8000
-uvicorn main:app --host 0.0.0.0 --port 8000
+:: Start Uvicorn server bound to all interfaces on port 8000.
+:: Prefer the local virtual environment created by setup.bat; fall back to a
+:: globally installed uvicorn if setup was skipped.
+if exist ".venv\Scripts\uvicorn.exe" (
+    ".venv\Scripts\uvicorn.exe" main:app --host 0.0.0.0 --port 8000
+) else (
+    echo  [Notice] .venv not found - run setup.bat first for an isolated install.
+    echo.
+    uvicorn main:app --host 0.0.0.0 --port 8000
+)
 
 echo.
 echo Server has stopped.
