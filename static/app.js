@@ -46,6 +46,12 @@ const projectUploadBtn = document.getElementById("project-upload-btn");
 const loadReviewCrewBtn = document.getElementById("load-review-crew-btn");
 const projectClearBtn = document.getElementById("project-clear-btn");
 const projectStatusEl = document.getElementById("project-status");
+const taskModeToggle = document.getElementById("task-mode-toggle");
+const tasksPanel = document.getElementById("tasks-panel");
+const tasksRefreshBtn = document.getElementById("tasks-refresh-btn");
+const pendingTasksList = document.getElementById("pending-tasks-list");
+const humanTasksList = document.getElementById("human-tasks-list");
+const dagList = document.getElementById("dag-list");
 const personaForm = document.getElementById("persona-form");
 const personasListEl = document.getElementById("personas-list");
 const personaCountEl = document.getElementById("persona-count");
@@ -498,6 +504,304 @@ function matchVoiceForPreset(preset) {
     return byGender ? byGender.ShortName : preset.voice;
 }
 
+// ============================================================
+//  Task Mode: extraction queue, approvals, DAG viewer, execution
+//  (Decoupled — the UI only calls endpoints; no persona executes anything.)
+// ============================================================
+const MODEL_FOR_TASKS = () => modelSelect.value || "llama3.2:latest";
+
+async function refreshTasks() {
+    try {
+        const data = await (await fetch("/api/tasks")).json();
+        renderTasks(data.tasks || []);
+    } catch (e) {
+        console.error("refreshTasks failed:", e);
+    }
+}
+
+function renderTasks(tasks) {
+    const pending = [];
+    const human = [];
+    tasks.forEach(t => {
+        if (t.status === "rejected") return;
+        if (t.type === "HUMAN_CENTRIC" && (t.status === "approved" || t.status === "completed")) {
+            human.push(t);
+        } else if (t.status !== "completed") {
+            pending.push(t); // pending tasks + approved AI tasks awaiting a DAG
+        }
+    });
+
+    pendingTasksList.innerHTML = "";
+    if (!pending.length) {
+        pendingTasksList.innerHTML = `<p class="tasks-empty">No pending tasks.</p>`;
+    } else {
+        pending.forEach(t => pendingTasksList.appendChild(buildTaskCard(t)));
+    }
+
+    humanTasksList.innerHTML = "";
+    if (!human.length) {
+        humanTasksList.innerHTML = `<p class="tasks-empty">No human reminders.</p>`;
+    } else {
+        human.forEach(t => humanTasksList.appendChild(buildHumanCard(t)));
+    }
+}
+
+function taskActionBtn(label, icon, kind, onClick) {
+    const b = document.createElement("button");
+    b.className = `task-btn task-btn-${kind}`;
+    b.innerHTML = `<i class="fa-solid ${icon}"></i> ${label}`;
+    b.addEventListener("click", onClick);
+    return b;
+}
+
+function buildTaskCard(t) {
+    const card = document.createElement("div");
+    card.className = `task-card ${t.type === "AI_CENTRIC" ? "task-ai" : "task-human"}`;
+    const typeLabel = t.type === "AI_CENTRIC" ? "AI" : "HUMAN";
+    card.innerHTML =
+        `<div class="task-meta">
+            <span class="task-type-badge">${typeLabel}</span>
+            <span class="task-persona"><i class="fa-solid fa-user"></i> ${escapeHtml(t.source_persona)}</span>
+            <span class="task-conf">conf ${Math.round((t.confidence || 0) * 100)}%</span>
+            ${t.status === "approved" ? '<span class="task-approved">approved</span>' : ""}
+        </div>
+        <div class="task-desc">${escapeHtml(t.description)}</div>
+        <div class="task-actions"></div>`;
+    const actions = card.querySelector(".task-actions");
+    if (t.status === "pending") {
+        actions.appendChild(taskActionBtn("Approve", "fa-check", "approve", () => approveTask(t.id, "approve")));
+        actions.appendChild(taskActionBtn("Reject", "fa-xmark", "reject", () => approveTask(t.id, "reject")));
+        actions.appendChild(taskActionBtn("Modify", "fa-pen", "modify", () => modifyTask(t)));
+    } else if (t.status === "approved" && t.type === "AI_CENTRIC") {
+        actions.appendChild(taskActionBtn("Build DAG", "fa-sitemap", "build", () => buildDag(t.id)));
+    }
+    return card;
+}
+
+function buildHumanCard(t) {
+    const card = document.createElement("div");
+    card.className = `task-card task-human ${t.status === "completed" ? "task-done" : ""}`;
+    card.innerHTML =
+        `<div class="task-meta">
+            <span class="task-type-badge">HUMAN</span>
+            <span class="task-persona"><i class="fa-solid fa-user"></i> ${escapeHtml(t.source_persona)}</span>
+        </div>
+        <div class="task-desc">${escapeHtml(t.description)}</div>
+        <div class="task-actions"></div>`;
+    const actions = card.querySelector(".task-actions");
+    if (t.status !== "completed") {
+        actions.appendChild(taskActionBtn("Mark Complete", "fa-check-double", "done", () => completeTask(t.id)));
+    } else {
+        actions.innerHTML = `<span class="task-approved">completed</span>`;
+    }
+    return card;
+}
+
+async function approveTask(id, decision, description) {
+    try {
+        await fetch("/api/tasks/approve", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ task_id: id, decision, description })
+        });
+        refreshTasks();
+    } catch (e) {
+        console.error("approveTask failed:", e);
+    }
+}
+
+function modifyTask(t) {
+    const next = prompt("Edit task description (it will be re-classified):", t.description);
+    if (next === null) return;
+    approveTask(t.id, "modify", next);
+}
+
+async function completeTask(id) {
+    try {
+        await fetch("/api/tasks/complete", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ task_id: id })
+        });
+        refreshTasks();
+    } catch (e) {
+        console.error("completeTask failed:", e);
+    }
+}
+
+async function buildDag(taskId) {
+    try {
+        const res = await fetch("/api/dag/create", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ task_id: taskId })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "DAG create failed");
+        refreshTasks();
+        refreshDags();
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+async function refreshDags() {
+    try {
+        const data = await (await fetch("/api/dags")).json();
+        renderDags(data.dags || []);
+    } catch (e) {
+        console.error("refreshDags failed:", e);
+    }
+}
+
+function renderDags(dags) {
+    if (!dags.length) {
+        dagList.innerHTML = `<p class="tasks-empty">Approve an AI task and click <strong>Build DAG</strong> to create an execution plan.</p>`;
+        return;
+    }
+    dagList.innerHTML = "";
+    dags.forEach(dag => dagList.appendChild(buildDagCard(dag)));
+}
+
+function buildDagCard(dag) {
+    const card = document.createElement("div");
+    card.className = "dag-card";
+
+    const header = document.createElement("div");
+    header.className = "dag-header";
+    header.innerHTML =
+        `<div class="dag-goal"><i class="fa-solid fa-bullseye"></i> ${escapeHtml(dag.goal)}</div>
+         <span class="dag-status dag-status-${dag.status}">${dag.status}</span>`;
+    card.appendChild(header);
+
+    const controls = document.createElement("div");
+    controls.className = "dag-controls";
+    const finished = dag.status === "complete" || dag.status === "cancelled";
+    const runBtn = taskActionBtn("Run Next Step", "fa-forward-step", "run", () => executeDag(dag.id));
+    runBtn.disabled = finished;
+    controls.appendChild(runBtn);
+    const cancelBtn = taskActionBtn("Cancel", "fa-ban", "cancel", () => cancelDag(dag.id));
+    cancelBtn.disabled = finished;
+    controls.appendChild(cancelBtn);
+    card.appendChild(controls);
+
+    const tree = document.createElement("div");
+    tree.className = "dag-tree";
+    const byId = {};
+    dag.nodes.forEach(n => { byId[n.id] = n; });
+    renderDagNode(dag, dag.root_id, byId, tree, 0, new Set());
+    card.appendChild(tree);
+
+    return card;
+}
+
+function dagMiniBtn(label, icon, onClick) {
+    const b = document.createElement("button");
+    b.className = "dag-mini-btn";
+    b.title = label;
+    b.innerHTML = `<i class="fa-solid ${icon}"></i>`;
+    b.addEventListener("click", onClick);
+    return b;
+}
+
+function renderDagNode(dag, nodeId, byId, container, depth, seen) {
+    const n = byId[nodeId];
+    if (!n || seen.has(nodeId)) return; // guard against cycles (shouldn't happen)
+    seen.add(nodeId);
+
+    const row = document.createElement("div");
+    row.className = `dag-node dag-node-${n.status}`;
+    row.style.marginLeft = `${depth * 1.1}rem`;
+    const depNote = n.dependencies.length ? `<span class="dag-dep">⏳ ${n.dependencies.length} dep</span>` : "";
+    row.innerHTML =
+        `<span class="dag-node-dot"></span>
+         <span class="dag-node-action">${escapeHtml(n.action)}</span>
+         <span class="dag-node-handler">${escapeHtml(n.handler)}</span>
+         ${depNote}
+         <span class="dag-node-btns"></span>`;
+    const btns = row.querySelector(".dag-node-btns");
+    const active = dag.status !== "cancelled" && dag.status !== "complete";
+    if (!n.children.length && n.type === "atomic" && active) {
+        btns.appendChild(dagMiniBtn("Expand into sub-steps", "fa-code-fork", () => expandNode(dag.id, n.id)));
+        if (n.status === "pending") {
+            btns.appendChild(dagMiniBtn("Run this node", "fa-play", () => executeDag(dag.id, n.id)));
+        }
+    }
+    container.appendChild(row);
+
+    if (n.result) {
+        const res = document.createElement("pre");
+        res.className = "dag-node-result";
+        res.style.marginLeft = `${(depth + 1) * 1.1}rem`;
+        res.textContent = n.result.length > 700 ? n.result.slice(0, 700) + "…" : n.result;
+        container.appendChild(res);
+    }
+
+    n.children.forEach(cid => renderDagNode(dag, cid, byId, container, depth + 1, seen));
+}
+
+async function expandNode(dagId, nodeId) {
+    try {
+        const res = await fetch("/api/dag/expand", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dag_id: dagId, node_id: nodeId, model: MODEL_FOR_TASKS() })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Expand failed");
+        refreshDags();
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+async function executeDag(dagId, nodeId) {
+    try {
+        const body = { dag_id: dagId, model: MODEL_FOR_TASKS() };
+        if (nodeId) body.node_id = nodeId;
+        const res = await fetch("/api/dag/execute", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Execute failed");
+        if (data.executed && data.result) {
+            injectExecutionResult(data.executed, data.result);
+        } else if (data.blocked) {
+            alert("The next step is blocked by unmet dependencies. Run or expand its prerequisites first.");
+        } else if (data.done) {
+            alert("DAG complete — all nodes have executed.");
+        }
+        refreshDags();
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+async function cancelDag(dagId) {
+    try {
+        await fetch("/api/dag/cancel", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dag_id: dagId })
+        });
+        refreshDags();
+    } catch (e) {
+        console.error("cancelDag failed:", e);
+    }
+}
+
+// Inject an executed node's result back into the conversation (spec 6.2).
+function injectExecutionResult(node, result) {
+    const welcomeEl = chatFeedEl.querySelector(".chat-feed-welcome");
+    if (welcomeEl) welcomeEl.remove();
+    const msg = {
+        sender: "Execution",
+        content: `[${node.handler}] ${node.action}\n\n${result}`,
+        is_user: false,
+        color: "#22c55e",
+        emoji: "⚙️",
+        model: "DAG"
+    };
+    state.chatHistory.push(msg);
+    renderMessageBubble(msg);
+}
+
 // Helper to set header status indicators
 function setIndicatorStatus(el, status, text) {
     el.className = `status-indicator ${status}`;
@@ -799,6 +1103,13 @@ function setupEventListeners() {
     projectClearBtn.addEventListener("click", clearProject);
     loadReviewCrewBtn.addEventListener("click", loadReviewCrew);
 
+    // Task Mode toggle — reveal the Tasks & Execution panel and load current state
+    taskModeToggle.addEventListener("change", () => {
+        tasksPanel.style.display = taskModeToggle.checked ? "" : "none";
+        if (taskModeToggle.checked) { refreshTasks(); refreshDags(); }
+    });
+    tasksRefreshBtn.addEventListener("click", () => { refreshTasks(); refreshDags(); });
+
     // Voice search and filters
     voiceSearchInput.addEventListener("input", filterAndPopulateVoices);
     voiceGenderFilter.addEventListener("change", filterAndPopulateVoices);
@@ -1082,6 +1393,9 @@ async function processSpeakerTurn(speaker) {
         state.consecutiveErrors = 0; // healthy turn — reset the failure streak
         renderMessageBubble(msgObject);
 
+        // Task Mode: the server already extracted tasks from this reply; refresh the panel.
+        if (taskModeToggle && taskModeToggle.checked) refreshTasks();
+
         setTurnStatus(`${speaker.name} is speaking...`, false);
         applySpeakingVisuals(speaker);
         await playClip(data.audio_url, data.text);
@@ -1154,7 +1468,8 @@ async function fetchSpeakerLine(speaker) {
             other_participants: otherNames,
             messages: recentHistoryPayload(),
             voice: speaker.voice,
-            temperature: speaker.temp
+            temperature: speaker.temp,
+            extract_tasks: !!(taskModeToggle && taskModeToggle.checked)
         })
     });
     if (!response.ok) {

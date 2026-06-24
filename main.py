@@ -15,6 +15,8 @@ from pydantic import BaseModel
 import httpx
 import edge_tts
 
+import tasks  # Task Extraction + DAG Execution subsystem (decoupled module)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("persona-workshop")
@@ -29,6 +31,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount the Task Extraction + DAG endpoints (/api/tasks, /api/dag/*).
+app.include_router(tasks.router)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -225,6 +230,7 @@ class ChatRequest(BaseModel):
     messages: List[Message]
     voice: Optional[str] = None
     temperature: float = 0.7
+    extract_tasks: bool = False   # when true, run the task-extraction pass on the reply
 
 class NarrateRequest(BaseModel):
     model: str
@@ -374,10 +380,19 @@ async def chat_turn(req: ChatRequest):
                 # We don't fail the chat generation if only TTS fails, just continue without audio
                 audio_url = None
 
+    # Task extraction hook (decoupled layer). Best-effort: never breaks chat.
+    extracted = []
+    if req.extract_tasks and response_text:
+        try:
+            extracted = tasks.extract_from_text(response_text, req.persona_name)
+        except Exception as e:
+            logger.error(f"Task extraction failed: {e}")
+
     return {
         "persona_name": req.persona_name,
         "text": response_text,
-        "audio_url": audio_url
+        "audio_url": audio_url,
+        "extracted_tasks": extracted,
     }
 
 @app.post("/api/narrate")

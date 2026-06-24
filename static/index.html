@@ -201,6 +201,13 @@
                             <span class="story-toggle-label"><i class="fa-solid fa-folder-tree"></i> Project Mode</span>
                         </label>
                     </div>
+                    <div class="story-mode-group">
+                        <label class="story-toggle" for="task-mode-toggle">
+                            <input type="checkbox" id="task-mode-toggle">
+                            <span class="story-toggle-track"><span class="story-toggle-thumb"></span></span>
+                            <span class="story-toggle-label"><i class="fa-solid fa-list-check"></i> Task Mode</span>
+                        </label>
+                    </div>
                 </div>
 
                 <!-- Project Mode panel -->
@@ -267,8 +274,42 @@
                     </div>
                 </div>
             </section>
-            
+
         </main>
+
+        <!-- Task Extraction + DAG Execution panel (Task Mode) -->
+        <section class="panel tasks-panel glass" id="tasks-panel" style="display:none;">
+            <div class="panel-header">
+                <div class="header-main-title">
+                    <h2><i class="fa-solid fa-diagram-project icon-gradient"></i> Tasks &amp; Execution</h2>
+                    <p class="panel-subtitle">Extracted tasks are user-approved before any execution. Nothing runs automatically.</p>
+                </div>
+                <button id="tasks-refresh-btn" class="btn btn-info"><i class="fa-solid fa-rotate"></i> Refresh</button>
+            </div>
+
+            <div class="tasks-grid">
+                <!-- Left: pending tasks + human reminders -->
+                <div class="tasks-col">
+                    <h3 class="tasks-col-title"><i class="fa-solid fa-inbox"></i> Pending Tasks</h3>
+                    <div id="pending-tasks-list" class="tasks-list">
+                        <p class="tasks-empty">No tasks extracted yet. Run a discussion with Task Mode on.</p>
+                    </div>
+
+                    <h3 class="tasks-col-title"><i class="fa-solid fa-person"></i> Human Reminders</h3>
+                    <div id="human-tasks-list" class="tasks-list">
+                        <p class="tasks-empty">Human-action tasks will appear here as reminders.</p>
+                    </div>
+                </div>
+
+                <!-- Right: DAG viewer + execution -->
+                <div class="tasks-col">
+                    <h3 class="tasks-col-title"><i class="fa-solid fa-sitemap"></i> Execution DAGs</h3>
+                    <div id="dag-list" class="dag-list">
+                        <p class="tasks-empty">Approve an AI task and click <strong>Build DAG</strong> to create an execution plan.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
     </div>
 
     <!-- Hidden audio element for TTS playback -->
@@ -276,6 +317,6 @@
     <audio id="preview-tts-audio" style="display: none;"></audio>
 
     <!-- Main JavaScript -->
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=6"></script>
 </body>
 </html>
