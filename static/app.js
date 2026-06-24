@@ -14,6 +14,8 @@ const state = {
     consecutiveErrors: 0,
     turnTimer: null,        // pending setTimeout handle for the next turn
     stopRequested: false,   // set on pause so an in-flight turn bails out
+    projectLoaded: false,   // a codebase is loaded for review
+    projectTurn: 0,         // advances each turn to rotate which files are reviewed
 };
 
 // How many recent messages to send to the model each turn. Keeps requests
@@ -35,6 +37,15 @@ const previewVoiceBtn = document.getElementById("preview-voice-btn");
 const storyModeToggle = document.getElementById("story-mode-toggle");
 const narratorVoiceSelect = document.getElementById("narrator-voice");
 const narratorVoiceWrap = document.getElementById("narrator-voice-wrap");
+const projectModeToggle = document.getElementById("project-mode-toggle");
+const projectPanel = document.getElementById("project-panel");
+const projectRepoUrl = document.getElementById("project-repo-url");
+const projectLoadRepoBtn = document.getElementById("project-load-repo-btn");
+const projectFileInput = document.getElementById("project-file-input");
+const projectUploadBtn = document.getElementById("project-upload-btn");
+const loadReviewCrewBtn = document.getElementById("load-review-crew-btn");
+const projectClearBtn = document.getElementById("project-clear-btn");
+const projectStatusEl = document.getElementById("project-status");
 const personaForm = document.getElementById("persona-form");
 const personasListEl = document.getElementById("personas-list");
 const personaCountEl = document.getElementById("persona-count");
@@ -135,8 +146,58 @@ const PRESETS = {
         prompt: "You are a Tech Support specialist on the help desk. You are patient, friendly, and methodical, focused on diagnosing problems, walking people through fixes step by step, and keeping systems running. You ask clarifying questions and explain technical things in plain language. Keep your responses short (2-3 sentences max).",
         voice: "en-GB-RyanNeural",
         temp: 0.6
+    },
+
+    // --- Project Review Crew (for Project Mode) ---
+    architect: {
+        name: "Senior Architect",
+        emoji: "🏗️",
+        color: "#0ea5e9",
+        gender: "Male",
+        prompt: "You are a Senior Software Architect reviewing a real codebase. You evaluate structure, modularity, scalability, technical debt, and maintainability. You cite specific files and patterns you see, call out fragile or duplicated code, and propose concrete refactors. Be direct and technical. Keep your responses short (2-4 sentences).",
+        voice: "en-US-AndrewNeural",
+        temp: 0.6
+    },
+    product: {
+        name: "Product Strategist",
+        emoji: "🧭",
+        color: "#8b5cf6",
+        gender: "Female",
+        prompt: "You are a Product Strategist reviewing a project. You focus on product-market fit, user value, missing features, and gaps in the experience. You ask 'who is this for and what problem does it solve?', spot where the product is incomplete, and suggest the highest-impact additions. Keep your responses short (2-4 sentences).",
+        voice: "en-US-AriaNeural",
+        temp: 0.7
+    },
+    security: {
+        name: "Security Auditor",
+        emoji: "🔒",
+        color: "#ef4444",
+        gender: "Male",
+        prompt: "You are a Security Auditor reviewing a codebase. You look for vulnerabilities, exposed secrets, unsafe input handling, injection risks, weak auth, and dependency risks. You name the specific file and line-of-thinking, rate severity, and give a concrete fix. Be precise and cautious. Keep your responses short (2-4 sentences).",
+        voice: "en-US-RogerNeural",
+        temp: 0.5
+    },
+    uxcritic: {
+        name: "UX Critic",
+        emoji: "🎨",
+        color: "#ec4899",
+        gender: "Female",
+        prompt: "You are a UX Critic reviewing a project. You focus on usability, user flows, clarity, accessibility, and visual polish. You point out confusing interactions, missing feedback, and friction, and you suggest concrete improvements to make the experience smoother and more delightful. Keep your responses short (2-4 sentences).",
+        voice: "en-US-JennyNeural",
+        temp: 0.7
+    },
+    monetization: {
+        name: "Monetization Strategist",
+        emoji: "💸",
+        color: "#22c55e",
+        gender: "Male",
+        prompt: "You are a Monetization and Growth Strategist reviewing a project. You focus on how it could make money: pricing models, subscription vs one-time, premium features, target market, go-to-market, and realistic revenue paths. You identify the strongest monetization angle and the fastest path to first revenue. Keep your responses short (2-4 sentences).",
+        voice: "en-US-GuyNeural",
+        temp: 0.75
     }
 };
+
+// Persona keys that make up the one-click "Review Crew" for Project Mode.
+const REVIEW_CREW_KEYS = ["architect", "product", "security", "uxcritic", "monetization"];
 
 // Initialize Application
 window.addEventListener("DOMContentLoaded", async () => {
@@ -146,6 +207,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     await fetchVoices();
     loadLocalPersonas();
     updateControlsStatus();
+    refreshProjectStatus();
 });
 
 // Setup Form Collapse
@@ -298,6 +360,142 @@ function populateNarratorVoices() {
         }
     }
     if (english.length > 0) narratorVoiceSelect.value = english[0].ShortName;
+}
+
+// ============================================================
+//  Project Mode: clone/upload a codebase and load a review crew
+// ============================================================
+function escapeHtml(str) {
+    return String(str == null ? "" : str)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+async function refreshProjectStatus() {
+    try {
+        const res = await fetch("/api/project/status");
+        if (res.ok) renderProjectStatus(await res.json());
+    } catch (e) {
+        console.error("Project status check failed:", e);
+    }
+}
+
+function renderProjectStatus(summary) {
+    state.projectLoaded = !!(summary && summary.loaded);
+    if (!projectStatusEl) return;
+    if (state.projectLoaded) {
+        const treePreview = (summary.tree || "").split("\n").slice(0, 14).join("\n");
+        const more = summary.file_count > 14 ? "\n…" : "";
+        projectStatusEl.innerHTML =
+            `<strong>${escapeHtml(summary.name)}</strong> — ${summary.file_count} files indexed`
+            + `<div class="project-source">${escapeHtml(summary.source || "")}</div>`
+            + `<pre class="project-tree">${escapeHtml(treePreview + more)}</pre>`;
+    } else {
+        projectStatusEl.textContent = "No project loaded. Clone a repo or upload files to begin.";
+    }
+}
+
+function setProjectBusy(msg) {
+    if (projectStatusEl) {
+        projectStatusEl.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${escapeHtml(msg)}`;
+    }
+}
+
+async function loadProjectRepo() {
+    const url = projectRepoUrl.value.trim();
+    if (!url) { alert("Enter a GitHub repository URL first."); return; }
+    setProjectBusy(`Cloning ${url} … (this can take a minute)`);
+    projectLoadRepoBtn.disabled = true;
+    try {
+        const res = await fetch("/api/project/load_repo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ repo_url: url })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Clone failed");
+        renderProjectStatus(data);
+        onProjectLoaded(data);
+    } catch (e) {
+        projectStatusEl.textContent = `Error: ${e.message}`;
+    } finally {
+        projectLoadRepoBtn.disabled = false;
+    }
+}
+
+async function uploadProjectFiles() {
+    const files = projectFileInput.files;
+    if (!files || files.length === 0) { alert("Choose a .zip or project files to upload first."); return; }
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    setProjectBusy(`Uploading ${files.length} item(s) …`);
+    projectUploadBtn.disabled = true;
+    try {
+        const res = await fetch("/api/project/upload", { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Upload failed");
+        renderProjectStatus(data);
+        onProjectLoaded(data);
+    } catch (e) {
+        projectStatusEl.textContent = `Error: ${e.message}`;
+    } finally {
+        projectUploadBtn.disabled = false;
+    }
+}
+
+async function clearProject() {
+    try { await fetch("/api/project/clear", { method: "POST" }); } catch (e) {}
+    state.projectLoaded = false;
+    state.projectTurn = 0;
+    renderProjectStatus({ loaded: false });
+}
+
+// When a project loads: reset file rotation, ensure Project Mode is on, and
+// steer the topic toward a review unless the user set their own.
+function onProjectLoaded(summary) {
+    state.projectTurn = 0;
+    if (projectModeToggle && !projectModeToggle.checked) {
+        projectModeToggle.checked = true;
+        projectPanel.style.display = "";
+    }
+    const DEFAULT_TOPIC = "Explain why space exploration is essential to human survival.";
+    const current = chatTopicInput.value.trim();
+    if (!current || current === DEFAULT_TOPIC) {
+        chatTopicInput.value = `Review the "${summary.name}" project: where it can improve, where the gaps are, and how to monetize it.`;
+    }
+}
+
+// One-click: replace the panel with the 5-persona project Review Crew.
+function loadReviewCrew() {
+    if (state.personas.length > 0 &&
+        !confirm("Replace the current panel with the 5-persona Review Crew (Architect, Product, Security, UX, Monetization)?")) {
+        return;
+    }
+    state.personas = REVIEW_CREW_KEYS.map(key => {
+        const p = PRESETS[key];
+        return {
+            id: `review_${key}`,
+            name: p.name,
+            emoji: p.emoji,
+            color: p.color,
+            model: modelSelect.value || "llama3.2:latest",
+            voice: matchVoiceForPreset(p),
+            prompt: p.prompt,
+            temp: p.temp
+        };
+    });
+    savePersonasToStorage();
+    updatePersonaListUI();
+    updateControlsStatus();
+}
+
+// Resolve a preset's preferred voice against the loaded voice list, falling back
+// to any English voice of the right gender.
+function matchVoiceForPreset(preset) {
+    const exact = state.voices.find(v => v.ShortName === preset.voice);
+    if (exact) return exact.ShortName;
+    const byGender = state.voices.find(v => v.Language.startsWith("en") && v.Gender === (preset.gender || "Male"));
+    return byGender ? byGender.ShortName : preset.voice;
 }
 
 // Helper to set header status indicators
@@ -589,6 +787,17 @@ function setupEventListeners() {
     storyModeToggle.addEventListener("change", () => {
         narratorVoiceWrap.style.display = storyModeToggle.checked ? "" : "none";
     });
+
+    // Project Mode toggle — reveal the project ingest panel when enabled
+    projectModeToggle.addEventListener("change", () => {
+        projectPanel.style.display = projectModeToggle.checked ? "" : "none";
+        if (projectModeToggle.checked) refreshProjectStatus();
+    });
+
+    projectLoadRepoBtn.addEventListener("click", loadProjectRepo);
+    projectUploadBtn.addEventListener("click", uploadProjectFiles);
+    projectClearBtn.addEventListener("click", clearProject);
+    loadReviewCrewBtn.addEventListener("click", loadReviewCrew);
 
     // Voice search and filters
     voiceSearchInput.addEventListener("input", filterAndPopulateVoices);
@@ -911,7 +1120,29 @@ function recentHistoryPayload() {
 async function fetchSpeakerLine(speaker) {
     const otherNames = state.personas.filter(p => p.id !== speaker.id).map(p => p.name);
     const topic = chatTopicInput.value.trim() || "A casual chat.";
-    const fullSystemPrompt = `${speaker.prompt}\n\nThe current discussion topic is: "${topic}". Make sure to address this topic or comment on what other panelists have said.`;
+
+    // Project Mode: prepend the rotating review context (digest + a window of
+    // files that advances each turn) and steer the persona toward critique.
+    let projectBlock = "";
+    if (projectModeToggle && projectModeToggle.checked && state.projectLoaded) {
+        try {
+            const res = await fetch(`/api/project/context?turn=${state.projectTurn}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.context) {
+                    projectBlock =
+                        `\n\n--- PROJECT UNDER REVIEW ---\n${data.context}\n--- END PROJECT CONTEXT ---\n\n` +
+                        `As ${speaker.name}, analyze this project from your role. Give concrete, specific feedback: ` +
+                        `improvements, gaps or risks, and how it could be monetized. Reference actual file names when you can.`;
+                }
+            }
+        } catch (e) {
+            console.error("Project context fetch failed:", e);
+        }
+    }
+    state.projectTurn++; // rotate the reviewed files for the next turn
+
+    const fullSystemPrompt = `${speaker.prompt}\n\nThe current discussion topic is: "${topic}".${projectBlock} Make sure to address this topic or comment on what other panelists have said.`;
 
     const response = await fetch("/api/chat", {
         method: "POST",

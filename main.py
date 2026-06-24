@@ -1,11 +1,13 @@
 import os
 import re
+import io
 import uuid
 import shutil
+import zipfile
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -31,6 +33,165 @@ app.add_middleware(
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 AUDIO_DIR = os.path.join(STATIC_DIR, "audio")
+WORKSPACE_DIR = os.path.join(os.path.dirname(__file__), "workspace")
+
+# ---------------------------------------------------------------------------
+# Project Mode: clone/upload a codebase into a workspace, index its text files,
+# and serve a rotating review context so the crew can analyze the whole project
+# over the course of a session.
+# ---------------------------------------------------------------------------
+PROJECT_SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "env", "dist", "build",
+    ".next", "out", "target", ".idea", ".vscode", ".pytest_cache", ".mypy_cache",
+    "coverage", ".gradle", "bin", "obj", "audio", ".cache", "vendor", ".turbo",
+}
+PROJECT_TEXT_EXT = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".java", ".go", ".rs", ".rb",
+    ".php", ".c", ".cpp", ".cc", ".h", ".hpp", ".cs", ".html", ".htm", ".css", ".scss",
+    ".sass", ".less", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".md",
+    ".markdown", ".txt", ".sh", ".bash", ".bat", ".ps1", ".sql", ".vue", ".svelte", ".kt",
+    ".kts", ".swift", ".m", ".mm", ".r", ".pl", ".lua", ".dart", ".ex", ".exs", ".scala",
+    ".clj", ".gradle", ".xml", ".env", ".gitignore", ".dockerignore", ".graphql", ".proto",
+}
+PROJECT_NAMED_FILES = {"dockerfile", "makefile", "readme", "license", "procfile", ".env.example"}
+MAX_INDEX_FILES = 600        # cap how many text files we track
+MAX_READ_BYTES = 24000       # cap bytes read from any single file
+PROJECT_FILES_PER_TURN = 3   # how many files to surface each review turn
+PROJECT_EXCERPT_LEN = 1800   # chars per file excerpt in the review context
+
+# In-memory store of the currently loaded project (single-user local app).
+PROJECT: Dict[str, Any] = {
+    "name": None, "root": None, "source": None, "files": [], "tree": "", "digest": "",
+}
+
+
+def _looks_like_text(name: str) -> bool:
+    lower = name.lower()
+    if lower in PROJECT_NAMED_FILES or lower.startswith("readme") or lower.startswith("dockerfile"):
+        return True
+    _, ext = os.path.splitext(lower)
+    return ext in PROJECT_TEXT_EXT
+
+
+def _read_text(abspath: str) -> str:
+    try:
+        with open(abspath, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read(MAX_READ_BYTES)
+    except Exception:
+        return ""
+
+
+def _build_tree(rels: List[str]) -> str:
+    shown = rels[:250]
+    tree = "\n".join(shown)
+    if len(rels) > len(shown):
+        tree += f"\n... (+{len(rels) - len(shown)} more files)"
+    return tree
+
+
+def _build_digest(root: str, rels: List[str]) -> str:
+    parts: List[str] = []
+    readme = next((r for r in rels if r.lower().split("/")[-1].startswith("readme")), None)
+    if readme:
+        parts.append(f"=== README ({readme}) ===\n{_read_text(os.path.join(root, readme))[:4000]}")
+    manifests = [
+        "package.json", "requirements.txt", "pyproject.toml", "setup.py", "go.mod",
+        "cargo.toml", "pom.xml", "build.gradle", "composer.json", "gemfile",
+    ]
+    for m in manifests:
+        match = next((r for r in rels if r.lower().split("/")[-1] == m), None)
+        if match:
+            parts.append(f"=== {match} ===\n{_read_text(os.path.join(root, match))[:1500]}")
+    return "\n\n".join(parts)
+
+
+def _index_project(root: str, name: str, source: str) -> Dict[str, Any]:
+    files: List[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # prune skip dirs in-place so os.walk doesn't descend into them
+        dirnames[:] = [d for d in dirnames if d not in PROJECT_SKIP_DIRS]
+        for fn in filenames:
+            if _looks_like_text(fn):
+                rel = os.path.relpath(os.path.join(dirpath, fn), root).replace("\\", "/")
+                files.append(rel)
+    # shallow paths first, then alphabetical; then cap
+    files.sort(key=lambda r: (r.count("/"), r.lower()))
+    files = files[:MAX_INDEX_FILES]
+    PROJECT.update({
+        "name": name,
+        "root": root,
+        "source": source,
+        "files": files,
+        "tree": _build_tree(files),
+        "digest": _build_digest(root, files),
+    })
+    logger.info(f"Indexed project '{name}' ({len(files)} text files) from {source}")
+    return PROJECT
+
+
+def _project_summary() -> Dict[str, Any]:
+    return {
+        "loaded": PROJECT["root"] is not None,
+        "name": PROJECT["name"],
+        "source": PROJECT["source"],
+        "file_count": len(PROJECT["files"]),
+        "tree": PROJECT["tree"][:4000],
+    }
+
+
+def _project_context(turn: int) -> str:
+    """Build the review context for a given turn: the always-present digest plus a
+    rotating window of file excerpts so the whole project gets covered over time."""
+    if not PROJECT["root"]:
+        return ""
+    rels = PROJECT["files"]
+    header = (
+        f"You are reviewing a real software project called '{PROJECT['name']}' "
+        f"(source: {PROJECT['source']}).\n\n"
+        f"PROJECT FILE LIST ({len(rels)} files):\n{PROJECT['tree']}\n\n"
+        f"PROJECT DIGEST:\n{PROJECT['digest']}\n\n"
+    )
+    excerpts: List[str] = []
+    if rels:
+        n = len(rels)
+        start = (turn * PROJECT_FILES_PER_TURN) % n
+        seen = set()
+        for i in range(min(PROJECT_FILES_PER_TURN, n)):
+            rel = rels[(start + i) % n]
+            if rel in seen:
+                continue
+            seen.add(rel)
+            content = _read_text(os.path.join(PROJECT["root"], rel))[:PROJECT_EXCERPT_LEN]
+            excerpts.append(f"----- FILE: {rel} -----\n{content}")
+    return header + "FILES TO FOCUS ON THIS TURN:\n" + "\n\n".join(excerpts)
+
+
+def _safe_extract_zip(data: bytes, dest: str) -> None:
+    """Extract a zip while guarding against path-traversal (zip-slip)."""
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        dest_abs = os.path.abspath(dest)
+        for member in zf.infolist():
+            target = os.path.abspath(os.path.join(dest, member.filename))
+            if not (target == dest_abs or target.startswith(dest_abs + os.sep)):
+                continue  # skip entries that would escape the destination
+            if member.is_dir():
+                os.makedirs(target, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with zf.open(member) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+
+def _collapse_single_root(dest: str) -> str:
+    """If an extracted archive contains exactly one top-level folder (the usual
+    GitHub zip layout), treat that folder as the project root."""
+    try:
+        entries = [e for e in os.listdir(dest) if not e.startswith("__MACOSX")]
+    except OSError:
+        return dest
+    if len(entries) == 1 and os.path.isdir(os.path.join(dest, entries[0])):
+        return os.path.join(dest, entries[0])
+    return dest
 
 # Create directories and clean audio cache on startup
 @app.on_event("startup")
@@ -76,14 +237,20 @@ class NarrateRequest(BaseModel):
     temperature: float = 0.85
 
 def clean_text_for_tts(text: str) -> str:
-    """Removes text in asterisks, underscores, or brackets (actions/thoughts) for speech synthesis."""
-    # Remove asterisks and text between them: *chuckles* -> ""
-    text = re.sub(r'\*[^*]+\*', '', text)
-    # Remove underscores and text between them: _sighs_ -> ""
-    text = re.sub(r'_[^_]+_', '', text)
-    # Remove brackets and text between them: [thoughtful] -> ""
+    """Prepares text for speech synthesis. Markdown emphasis markers are stripped
+    but the emphasized WORDS are kept and spoken (so *word* is read as "word", not
+    skipped). Bracketed meta annotations like [thoughtful] are dropped."""
+    # Keep the words inside markdown emphasis, just drop the markers.
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)   # **bold**   -> bold
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)         # *italic*   -> italic
+    # Underscore emphasis only at word boundaries, so snake_case identifiers
+    # (e.g. clean_text_for_tts) are left untouched.
+    text = re.sub(r'(?<!\w)__([^_]+)__(?!\w)', r'\1', text)   # __bold__
+    text = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', text)     # _italic_
+    # Bracketed meta like [thoughtful] / [pause] is non-spoken; remove it.
     text = re.sub(r'\[[^\]]+\]', '', text)
-    # Clean up multiple spaces
+    # Collapse any leftover stray markers and whitespace.
+    text = text.replace('*', '').strip()
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -313,6 +480,99 @@ async def generate_tts(text: str, voice: str):
     except Exception as e:
         logger.error(f"TTS Preview failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------------------------------------------------------
+# Project Mode endpoints
+# ---------------------------------------------------------------------------
+@app.post("/api/project/load_repo")
+async def project_load_repo(payload: Dict[str, Any]):
+    """Clone a public GitHub (or any git) repository into the workspace and index it."""
+    repo_url = (payload.get("repo_url") or "").strip()
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="repo_url is required.")
+    if not re.match(r'^(https?://|git@)[\w.@:/\-~]+$', repo_url):
+        raise HTTPException(status_code=400, detail="That doesn't look like a valid repository URL.")
+
+    os.makedirs(WORKSPACE_DIR, exist_ok=True)
+    name = re.sub(r'\.git$', '', repo_url.rstrip("/").split("/")[-1]) or "repo"
+    name = re.sub(r'[^A-Za-z0-9_.-]', '_', name)
+    dest = os.path.join(WORKSPACE_DIR, name)
+    if os.path.exists(dest):
+        shutil.rmtree(dest, ignore_errors=True)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth", "1", repo_url, dest,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(status_code=504, detail="Cloning timed out after 3 minutes.")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="git is not installed on the server.")
+
+    if proc.returncode != 0:
+        detail = stderr.decode(errors="ignore").strip()[:300] if stderr else "unknown error"
+        raise HTTPException(status_code=400, detail=f"git clone failed: {detail}")
+
+    _index_project(dest, name, f"GitHub repo {repo_url}")
+    return _project_summary()
+
+
+@app.post("/api/project/upload")
+async def project_upload(files: List[UploadFile] = File(...)):
+    """Ingest an uploaded project: a single .zip is extracted; otherwise the files
+    are saved side by side. Then the result is indexed for review."""
+    os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+    if len(files) == 1 and files[0].filename and files[0].filename.lower().endswith(".zip"):
+        base = os.path.splitext(os.path.basename(files[0].filename))[0]
+        name = re.sub(r'[^A-Za-z0-9_.-]', '_', base) or "upload"
+        dest = os.path.join(WORKSPACE_DIR, name)
+        if os.path.exists(dest):
+            shutil.rmtree(dest, ignore_errors=True)
+        os.makedirs(dest, exist_ok=True)
+        try:
+            _safe_extract_zip(await files[0].read(), dest)
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="That file isn't a valid .zip archive.")
+        root = _collapse_single_root(dest)
+        _index_project(root, name, f"uploaded zip {files[0].filename}")
+    else:
+        name = "uploaded_files"
+        dest = os.path.join(WORKSPACE_DIR, name)
+        if os.path.exists(dest):
+            shutil.rmtree(dest, ignore_errors=True)
+        os.makedirs(dest, exist_ok=True)
+        for uf in files:
+            safe = os.path.basename(uf.filename or "file")
+            if not safe:
+                continue
+            with open(os.path.join(dest, safe), "wb") as out:
+                out.write(await uf.read())
+        _index_project(dest, name, f"{len(files)} uploaded file(s)")
+
+    return _project_summary()
+
+
+@app.get("/api/project/status")
+async def project_status():
+    return _project_summary()
+
+
+@app.post("/api/project/clear")
+async def project_clear():
+    PROJECT.update({"name": None, "root": None, "source": None, "files": [], "tree": "", "digest": ""})
+    return {"loaded": False}
+
+
+@app.get("/api/project/context")
+async def project_context(turn: int = 0):
+    """Returns the rotating review context (digest + a window of file excerpts)."""
+    return {"context": _project_context(turn), "loaded": PROJECT["root"] is not None}
+
 
 # Serve UI Static Files
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

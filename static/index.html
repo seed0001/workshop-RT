@@ -139,6 +139,14 @@
                         <button type="button" class="preset-badge" data-preset="sales">📈 Sales</button>
                         <button type="button" class="preset-badge" data-preset="support">🛠️ Tech Support</button>
                     </div>
+                    <div class="presets-container">
+                        <span class="preset-label">Review Crew:</span>
+                        <button type="button" class="preset-badge" data-preset="architect">🏗️ Architect</button>
+                        <button type="button" class="preset-badge" data-preset="product">🧭 Product</button>
+                        <button type="button" class="preset-badge" data-preset="security">🔒 Security</button>
+                        <button type="button" class="preset-badge" data-preset="uxcritic">🎨 UX Critic</button>
+                        <button type="button" class="preset-badge" data-preset="monetization">💸 Monetization</button>
+                    </div>
 
                     <div id="personas-list" class="personas-grid-list">
                         <div class="empty-state">
@@ -186,6 +194,30 @@
                             <select id="narrator-voice"></select>
                         </div>
                     </div>
+                    <div class="story-mode-group">
+                        <label class="story-toggle" for="project-mode-toggle">
+                            <input type="checkbox" id="project-mode-toggle">
+                            <span class="story-toggle-track"><span class="story-toggle-thumb"></span></span>
+                            <span class="story-toggle-label"><i class="fa-solid fa-folder-tree"></i> Project Mode</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Project Mode panel -->
+                <div class="project-panel" id="project-panel" style="display:none;">
+                    <div class="project-source-row">
+                        <input type="text" id="project-repo-url" placeholder="https://github.com/user/repo">
+                        <button id="project-load-repo-btn" class="btn btn-info"><i class="fa-solid fa-code-branch"></i> Clone &amp; Analyze</button>
+                    </div>
+                    <div class="project-source-row">
+                        <input type="file" id="project-file-input" multiple>
+                        <button id="project-upload-btn" class="btn btn-info"><i class="fa-solid fa-upload"></i> Upload &amp; Analyze</button>
+                    </div>
+                    <div class="project-actions-row">
+                        <button id="load-review-crew-btn" class="btn btn-primary"><i class="fa-solid fa-users-gear"></i> Load Review Crew</button>
+                        <button id="project-clear-btn" class="btn btn-danger"><i class="fa-solid fa-xmark"></i> Unload Project</button>
+                    </div>
+                    <div class="project-status" id="project-status">No project loaded. Clone a repo or upload files to begin.</div>
                 </div>
 
                 <!-- Group Chat Controls -->
@@ -244,6 +276,6 @@
     <audio id="preview-tts-audio" style="display: none;"></audio>
 
     <!-- Main JavaScript -->
-    <script src="/static/app.js?v=4"></script>
+    <script src="/static/app.js?v=5"></script>
 </body>
 </html>

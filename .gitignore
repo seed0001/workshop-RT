@@ -8,6 +8,9 @@ venv/
 # Generated TTS audio cache
 static/audio/*.mp3
 
+# Project Mode workspace (cloned/uploaded codebases)
+workspace/
+
 # OS / editor
 .DS_Store
 Thumbs.db

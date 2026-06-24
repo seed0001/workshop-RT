@@ -1216,3 +1216,72 @@ input[type="range"]::-webkit-slider-thumb:hover {
     color: hsl(45, 90%, 65%);
     background: rgba(234, 179, 8, 0.12);
 }
+
+/* ============================================================
+   Project Mode panel
+   ============================================================ */
+.project-panel {
+    margin-top: 0.6rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid rgba(14, 165, 233, 0.25);
+    background: rgba(14, 165, 233, 0.06);
+    border-radius: var(--radius-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.project-source-row,
+.project-actions-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.project-source-row input[type="text"] {
+    flex: 1 1 220px;
+    padding: 0.5rem 0.7rem;
+    border-radius: var(--radius-sm);
+    background: rgba(15, 23, 42, 0.6);
+    color: var(--text-secondary);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.project-source-row input[type="file"] {
+    flex: 1 1 220px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.project-panel .btn {
+    padding: 0.45rem 0.8rem;
+    font-size: 0.82rem;
+}
+
+.project-status {
+    margin-top: 0.2rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.project-status .project-source {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin: 0.15rem 0 0.4rem;
+}
+
+.project-status .project-tree {
+    max-height: 160px;
+    overflow: auto;
+    margin: 0;
+    padding: 0.5rem 0.7rem;
+    background: rgba(15, 23, 42, 0.5);
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    white-space: pre;
+}
