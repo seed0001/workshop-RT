@@ -34,6 +34,25 @@
             </div>
         </header>
 
+        <nav class="app-nav" aria-label="Application sections">
+            <button class="nav-item active" type="button" data-view="workshop">
+                <i class="fa-solid fa-comments"></i><span>Workshop</span>
+            </button>
+            <button class="nav-item" type="button" data-view="projects">
+                <i class="fa-solid fa-folder-tree"></i><span>Projects</span>
+            </button>
+            <button class="nav-item" type="button" data-view="tasks">
+                <i class="fa-solid fa-diagram-project"></i><span>Tasks</span>
+            </button>
+            <button class="nav-item" type="button" data-view="calendar">
+                <i class="fa-solid fa-calendar-days"></i><span>Calendar</span>
+            </button>
+            <button class="nav-item" type="button" data-view="settings">
+                <i class="fa-solid fa-sliders"></i><span>Settings</span>
+            </button>
+        </nav>
+
+        <section class="app-view active" id="view-workshop" data-view-panel="workshop">
         <!-- Main Dashboard Grid -->
         <main class="dashboard-grid">
             
@@ -195,36 +214,8 @@
                         </div>
                     </div>
                     <div class="story-mode-group">
-                        <label class="story-toggle" for="project-mode-toggle">
-                            <input type="checkbox" id="project-mode-toggle">
-                            <span class="story-toggle-track"><span class="story-toggle-thumb"></span></span>
-                            <span class="story-toggle-label"><i class="fa-solid fa-folder-tree"></i> Project Mode</span>
-                        </label>
+                        <span class="mode-summary" id="workshop-mode-summary">Standard conversation</span>
                     </div>
-                    <div class="story-mode-group">
-                        <label class="story-toggle" for="task-mode-toggle">
-                            <input type="checkbox" id="task-mode-toggle">
-                            <span class="story-toggle-track"><span class="story-toggle-thumb"></span></span>
-                            <span class="story-toggle-label"><i class="fa-solid fa-list-check"></i> Task Mode</span>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Project Mode panel -->
-                <div class="project-panel" id="project-panel" style="display:none;">
-                    <div class="project-source-row">
-                        <input type="text" id="project-repo-url" placeholder="https://github.com/user/repo">
-                        <button id="project-load-repo-btn" class="btn btn-info"><i class="fa-solid fa-code-branch"></i> Clone &amp; Analyze</button>
-                    </div>
-                    <div class="project-source-row">
-                        <input type="file" id="project-file-input" multiple>
-                        <button id="project-upload-btn" class="btn btn-info"><i class="fa-solid fa-upload"></i> Upload &amp; Analyze</button>
-                    </div>
-                    <div class="project-actions-row">
-                        <button id="load-review-crew-btn" class="btn btn-primary"><i class="fa-solid fa-users-gear"></i> Load Review Crew</button>
-                        <button id="project-clear-btn" class="btn btn-danger"><i class="fa-solid fa-xmark"></i> Unload Project</button>
-                    </div>
-                    <div class="project-status" id="project-status">No project loaded. Clone a repo or upload files to begin.</div>
                 </div>
 
                 <!-- Group Chat Controls -->
@@ -276,9 +267,66 @@
             </section>
 
         </main>
+        </section>
 
-        <!-- Task Extraction + DAG Execution panel (Task Mode) -->
-        <section class="panel tasks-panel glass" id="tasks-panel" style="display:none;">
+        <section class="app-view" id="view-projects" data-view-panel="projects">
+            <div class="view-heading">
+                <div>
+                    <span class="view-kicker">Codebase context</span>
+                    <h2>Projects</h2>
+                    <p>Load a codebase, inspect what is indexed, and decide whether workshop conversations should use it.</p>
+                </div>
+                <button type="button" class="btn btn-primary view-jump" data-go-view="workshop">
+                    <i class="fa-solid fa-comments"></i> Open Workshop
+                </button>
+            </div>
+
+            <section class="panel page-panel glass">
+                <div class="panel-header split-header">
+                    <div>
+                        <h2><i class="fa-solid fa-folder-tree icon-gradient"></i> Project Workspace</h2>
+                        <p class="panel-subtitle">One project can be active at a time.</p>
+                    </div>
+                    <label class="story-toggle" for="project-mode-toggle">
+                        <input type="checkbox" id="project-mode-toggle">
+                        <span class="story-toggle-track"><span class="story-toggle-thumb"></span></span>
+                        <span class="story-toggle-label">Use in conversations</span>
+                    </label>
+                </div>
+                <div class="project-panel" id="project-panel">
+                    <div class="project-source-row">
+                        <input type="text" id="project-repo-url" placeholder="https://github.com/user/repo">
+                        <button id="project-load-repo-btn" class="btn btn-info"><i class="fa-solid fa-code-branch"></i> Clone &amp; Analyze</button>
+                    </div>
+                    <div class="project-source-row">
+                        <input type="file" id="project-file-input" multiple>
+                        <button id="project-upload-btn" class="btn btn-info"><i class="fa-solid fa-upload"></i> Upload &amp; Analyze</button>
+                    </div>
+                    <div class="project-actions-row">
+                        <button id="load-review-crew-btn" class="btn btn-primary"><i class="fa-solid fa-users-gear"></i> Load Review Crew</button>
+                        <button id="project-clear-btn" class="btn btn-danger"><i class="fa-solid fa-xmark"></i> Unload Project</button>
+                    </div>
+                    <div class="project-status" id="project-status">No project loaded. Clone a repo or upload files to begin.</div>
+                </div>
+            </section>
+        </section>
+
+        <section class="app-view" id="view-tasks" data-view-panel="tasks">
+            <div class="view-heading">
+                <div>
+                    <span class="view-kicker">Commitments and execution</span>
+                    <h2>Tasks</h2>
+                    <p>Review extracted actions, approve intentional work, and run DAG steps one at a time.</p>
+                </div>
+                <label class="story-toggle" for="task-mode-toggle">
+                    <input type="checkbox" id="task-mode-toggle">
+                    <span class="story-toggle-track"><span class="story-toggle-thumb"></span></span>
+                    <span class="story-toggle-label">Extract tasks from new replies</span>
+                </label>
+            </div>
+
+        <!-- Task Extraction + DAG Execution panel -->
+        <section class="panel tasks-panel glass" id="tasks-panel">
             <div class="panel-header">
                 <div class="header-main-title">
                     <h2><i class="fa-solid fa-diagram-project icon-gradient"></i> Tasks &amp; Execution</h2>
@@ -310,6 +358,67 @@
                 </div>
             </div>
         </section>
+        </section>
+
+        <section class="app-view" id="view-calendar" data-view-panel="calendar">
+            <div class="view-heading">
+                <div>
+                    <span class="view-kicker">Meetings and follow-ups</span>
+                    <h2>Calendar</h2>
+                    <p>This view is reserved for the persistent local calendar, reminders, deadlines, and conversation follow-ups.</p>
+                </div>
+            </div>
+            <section class="panel page-panel glass empty-feature">
+                <i class="fa-solid fa-calendar-plus"></i>
+                <h3>Local calendar is the next subsystem</h3>
+                <p>The interface has been separated first so calendar controls can be added here without crowding the workshop.</p>
+                <div class="feature-outline">
+                    <span>Manual events</span>
+                    <span>Follow-up reminders</span>
+                    <span>Deadline links</span>
+                    <span>Future AI drafts</span>
+                </div>
+            </section>
+        </section>
+
+        <section class="app-view" id="view-settings" data-view-panel="settings">
+            <div class="view-heading">
+                <div>
+                    <span class="view-kicker">Runtime configuration</span>
+                    <h2>Settings</h2>
+                    <p>Connection health and application behavior are collected here as the settings surface grows.</p>
+                </div>
+            </div>
+            <div class="settings-grid">
+                <section class="panel page-panel glass settings-card">
+                    <div class="settings-icon"><i class="fa-solid fa-server"></i></div>
+                    <div>
+                        <h3>Local AI runtime</h3>
+                        <p>Ollama supplies the models available in each persona form. Start Ollama before opening a workshop session.</p>
+                        <button type="button" class="btn btn-info" id="settings-refresh-models">
+                            <i class="fa-solid fa-rotate"></i> Refresh models
+                        </button>
+                    </div>
+                </section>
+                <section class="panel page-panel glass settings-card">
+                    <div class="settings-icon"><i class="fa-solid fa-volume-high"></i></div>
+                    <div>
+                        <h3>Speech service</h3>
+                        <p>Edge TTS supplies persona and narrator voices. Voice selection remains attached to each persona.</p>
+                        <button type="button" class="btn btn-info" id="settings-refresh-voices">
+                            <i class="fa-solid fa-rotate"></i> Refresh voices
+                        </button>
+                    </div>
+                </section>
+                <section class="panel page-panel glass settings-card">
+                    <div class="settings-icon"><i class="fa-solid fa-database"></i></div>
+                    <div>
+                        <h3>Local data</h3>
+                        <p>Personas are stored in this browser. Tasks and DAGs currently live in server memory and reset when the backend restarts.</p>
+                    </div>
+                </section>
+            </div>
+        </section>
     </div>
 
     <!-- Hidden audio element for TTS playback -->
@@ -317,6 +426,6 @@
     <audio id="preview-tts-audio" style="display: none;"></audio>
 
     <!-- Main JavaScript -->
-    <script src="/static/app.js?v=6"></script>
+    <script src="/static/app.js?v=7"></script>
 </body>
 </html>

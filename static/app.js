@@ -69,6 +69,11 @@ const globalAudio = document.getElementById("global-tts-audio");
 const previewAudio = document.getElementById("preview-tts-audio");
 const formToggleBtn = document.getElementById("form-toggle-btn");
 const formCard = document.querySelector(".form-card");
+const navItems = Array.from(document.querySelectorAll(".nav-item"));
+const appViews = Array.from(document.querySelectorAll(".app-view"));
+const workshopModeSummary = document.getElementById("workshop-mode-summary");
+const settingsRefreshModelsBtn = document.getElementById("settings-refresh-models");
+const settingsRefreshVoicesBtn = document.getElementById("settings-refresh-voices");
 
 // Prebuilt Presets Configuration
 const PRESETS = {
@@ -207,6 +212,7 @@ const REVIEW_CREW_KEYS = ["architect", "product", "security", "uxcritic", "monet
 
 // Initialize Application
 window.addEventListener("DOMContentLoaded", async () => {
+    setupViewNavigation();
     setupFormCollapsible();
     setupEventListeners();
     await fetchOllamaModels();
@@ -214,7 +220,42 @@ window.addEventListener("DOMContentLoaded", async () => {
     loadLocalPersonas();
     updateControlsStatus();
     refreshProjectStatus();
+    updateWorkshopModeSummary();
 });
+
+// Application-level navigation. Views share the same DOM and runtime state, so
+// changing pages never resets an active conversation or loaded project.
+function showView(viewName, updateHash = true) {
+    const target = appViews.find(view => view.dataset.viewPanel === viewName) || appViews[0];
+    if (!target) return;
+
+    appViews.forEach(view => view.classList.toggle("active", view === target));
+    navItems.forEach(item => item.classList.toggle("active", item.dataset.view === target.dataset.viewPanel));
+
+    if (updateHash) history.replaceState(null, "", `#${target.dataset.viewPanel}`);
+    if (target.dataset.viewPanel === "projects") refreshProjectStatus();
+    if (target.dataset.viewPanel === "tasks") {
+        refreshTasks();
+        refreshDags();
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function setupViewNavigation() {
+    navItems.forEach(item => item.addEventListener("click", () => showView(item.dataset.view)));
+    document.querySelectorAll("[data-go-view]").forEach(item => {
+        item.addEventListener("click", () => showView(item.dataset.goView));
+    });
+    showView(window.location.hash.replace("#", "") || "workshop", false);
+}
+
+function updateWorkshopModeSummary() {
+    if (!workshopModeSummary) return;
+    const modes = [];
+    if (projectModeToggle && projectModeToggle.checked) modes.push("Project context on");
+    if (taskModeToggle && taskModeToggle.checked) modes.push("Task extraction on");
+    workshopModeSummary.textContent = modes.length ? modes.join(" • ") : "Standard conversation";
+}
 
 // Setup Form Collapse
 function setupFormCollapsible() {
@@ -462,8 +503,8 @@ function onProjectLoaded(summary) {
     state.projectTurn = 0;
     if (projectModeToggle && !projectModeToggle.checked) {
         projectModeToggle.checked = true;
-        projectPanel.style.display = "";
     }
+    updateWorkshopModeSummary();
     const DEFAULT_TOPIC = "Explain why space exploration is essential to human survival.";
     const current = chatTopicInput.value.trim();
     if (!current || current === DEFAULT_TOPIC) {
@@ -566,6 +607,12 @@ function buildTaskCard(t) {
             ${t.status === "approved" ? '<span class="task-approved">approved</span>' : ""}
         </div>
         <div class="task-desc">${escapeHtml(t.description)}</div>
+        <div class="task-assign">
+            <i class="fa-solid fa-user-tag"></i>
+            ${escapeHtml(t.assigned_by || "—")} <i class="fa-solid fa-arrow-right-long"></i>
+            <strong>${escapeHtml(t.assigned_to || "—")}</strong>
+            <span class="assign-type">${escapeHtml(t.assignment_type || "")}</span>
+        </div>
         <div class="task-actions"></div>`;
     const actions = card.querySelector(".task-actions");
     if (t.status === "pending") {
@@ -587,6 +634,12 @@ function buildHumanCard(t) {
             <span class="task-persona"><i class="fa-solid fa-user"></i> ${escapeHtml(t.source_persona)}</span>
         </div>
         <div class="task-desc">${escapeHtml(t.description)}</div>
+        <div class="task-assign">
+            <i class="fa-solid fa-user-tag"></i>
+            ${escapeHtml(t.assigned_by || "—")} <i class="fa-solid fa-arrow-right-long"></i>
+            <strong>${escapeHtml(t.assigned_to || "—")}</strong>
+            <span class="assign-type">${escapeHtml(t.assignment_type || "")}</span>
+        </div>
         <div class="task-actions"></div>`;
     const actions = card.querySelector(".task-actions");
     if (t.status !== "completed") {
@@ -710,9 +763,11 @@ function renderDagNode(dag, nodeId, byId, container, depth, seen) {
     row.className = `dag-node dag-node-${n.status}`;
     row.style.marginLeft = `${depth * 1.1}rem`;
     const depNote = n.dependencies.length ? `<span class="dag-dep">⏳ ${n.dependencies.length} dep</span>` : "";
+    const ownerTag = n.owner ? `<span class="dag-node-owner"><i class="fa-solid fa-user-tag"></i> ${escapeHtml(n.owner)}</span>` : "";
     row.innerHTML =
         `<span class="dag-node-dot"></span>
          <span class="dag-node-action">${escapeHtml(n.action)}</span>
+         ${ownerTag}
          <span class="dag-node-handler">${escapeHtml(n.handler)}</span>
          ${depNote}
          <span class="dag-node-btns"></span>`;
@@ -791,7 +846,7 @@ function injectExecutionResult(node, result) {
     const welcomeEl = chatFeedEl.querySelector(".chat-feed-welcome");
     if (welcomeEl) welcomeEl.remove();
     const msg = {
-        sender: "Execution",
+        sender: node.owner ? `Execution · ${node.owner}` : "Execution",
         content: `[${node.handler}] ${node.action}\n\n${result}`,
         is_user: false,
         color: "#22c55e",
@@ -1094,8 +1149,8 @@ function setupEventListeners() {
 
     // Project Mode toggle — reveal the project ingest panel when enabled
     projectModeToggle.addEventListener("change", () => {
-        projectPanel.style.display = projectModeToggle.checked ? "" : "none";
         if (projectModeToggle.checked) refreshProjectStatus();
+        updateWorkshopModeSummary();
     });
 
     projectLoadRepoBtn.addEventListener("click", loadProjectRepo);
@@ -1105,10 +1160,12 @@ function setupEventListeners() {
 
     // Task Mode toggle — reveal the Tasks & Execution panel and load current state
     taskModeToggle.addEventListener("change", () => {
-        tasksPanel.style.display = taskModeToggle.checked ? "" : "none";
         if (taskModeToggle.checked) { refreshTasks(); refreshDags(); }
+        updateWorkshopModeSummary();
     });
     tasksRefreshBtn.addEventListener("click", () => { refreshTasks(); refreshDags(); });
+    settingsRefreshModelsBtn.addEventListener("click", fetchOllamaModels);
+    settingsRefreshVoicesBtn.addEventListener("click", fetchVoices);
 
     // Voice search and filters
     voiceSearchInput.addEventListener("input", filterAndPopulateVoices);

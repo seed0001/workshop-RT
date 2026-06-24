@@ -47,7 +47,7 @@ ALLOWED_HANDLERS = {"generate_code", "create_files", "analyze_repo", "run_report
 # Strong multi-word intent markers (high confidence).
 STRONG_TRIGGERS = [
     r"\bwe should\b", r"\bwe need to\b", r"\bwe have to\b", r"\bwe must\b",
-    r"\bwe could\b", r"\bwe ought to\b", r"\blet'?s\b", r"\bi suggest\b",
+    r"\bwe could\b", r"\bwe ought to\b", r"\blet'?s\b", r"\blet us\b", r"\bi suggest\b",
     r"\bi propose\b", r"\bi recommend\b", r"\byou should\b",
 ]
 # Imperative verbs at the start of a sentence (medium confidence).
@@ -84,6 +84,74 @@ def _classify(desc: str) -> str:
     return "HUMAN_CENTRIC"
 
 
+# ---------------------------------------------------------------------------
+# Assignment / ownership (additive — never blocks a task)
+# ---------------------------------------------------------------------------
+# Role aliases -> canonical owner label. Longer phrases are matched first.
+ROLE_ALIASES = {
+    "tech support": "Tech Support", "support": "Tech Support",
+    "senior architect": "Senior Architect", "architect": "Senior Architect",
+    "product strategist": "Product Strategist", "product": "Product Strategist",
+    "security auditor": "Security Auditor", "security": "Security Auditor",
+    "ux critic": "UX Critic", "ux": "UX Critic",
+    "monetization strategist": "Monetization Strategist", "monetization": "Monetization Strategist",
+    "growth": "Monetization Strategist",
+    "backend engineer": "Backend Engineer", "backend": "Backend Engineer",
+    "frontend engineer": "Frontend Engineer", "frontend": "Frontend Engineer",
+    "hr director": "HR Director", "hr": "HR Director",
+    "legal counsel": "Legal Counsel", "legal": "Legal Counsel",
+    "sales director": "Sales Director", "sales": "Sales Director",
+    "cto": "CTO", "ceo": "CEO", "cfo": "CFO", "cmo": "CMO", "coo": "COO",
+}
+_ROLE_ALT = "|".join(re.escape(a) for a in sorted(ROLE_ALIASES, key=len, reverse=True))
+_ASSIGN_PATTERNS = [
+    re.compile(rf"\b(?:need|needs|want|wants|have|get|tell|ask|asks|assign|assigns)\s+(?:the\s+)?({_ROLE_ALT})\b", re.IGNORECASE),
+    re.compile(rf"\b({_ROLE_ALT})\s*,", re.IGNORECASE),
+    re.compile(rf"\b({_ROLE_ALT})\s+(?:should|will|can|must|handle|handles|take|takes|own|owns)\b", re.IGNORECASE),
+]
+
+
+# Direct-instruction cues ("I need you to…", "can you…") that signal an
+# actionable, assigned task even without one of the standard intent triggers.
+_DIRECT_CUES = [
+    re.compile(r"\b(?:i|we)\s+(?:need|want|would like|'d like)\s+(?:you|the\s+\w+|\w+)\s+to\b", re.IGNORECASE),
+    re.compile(r"\bcan you\b", re.IGNORECASE),
+]
+
+
+def _has_assignment_cue(sentence: str) -> bool:
+    """True if the sentence is phrased as an assignment/instruction, even if it
+    lacks a standard intent trigger. Lets 'CTO, handle this' get extracted."""
+    return (any(p.search(sentence) for p in _ASSIGN_PATTERNS) or
+            any(p.search(sentence) for p in _DIRECT_CUES))
+
+
+def _detect_assignment(sentence: str, source_persona: str):
+    """Return (assigned_to, assignment_type). Explicit if another role is named
+    in an assignment context; otherwise (None, 'inferred')."""
+    for pat in _ASSIGN_PATTERNS:
+        m = pat.search(sentence)
+        if m:
+            canon = ROLE_ALIASES.get(m.group(1).lower())
+            if canon and canon.lower() != (source_persona or "").lower():
+                return canon, "explicit"
+    return None, "inferred"
+
+
+def _infer_assignee(desc: str) -> str:
+    """Default assignment when no explicit target. Always returns an owner."""
+    low = desc.lower()
+    if "analyze repo" in low or "analyse repo" in low or "review the repo" in low or "audit the code" in low:
+        return "CTO"
+    if re.search(r"\b(code|api|backend|endpoint|database|server|function|script)\b", low):
+        return "Backend Engineer"
+    if re.search(r"\b(ui|frontend|css|layout|interface|screen|button)\b", low):
+        return "Frontend Engineer"
+    if re.search(r"\b(report|finance|financial|budget|revenue|cost|pricing)\b", low):
+        return "CFO"
+    return "CTO"  # fallback
+
+
 def _actionable(sentence: str):
     """Return (is_actionable, base_confidence) for a sentence."""
     if any(re.search(p, sentence, re.IGNORECASE) for p in STRONG_TRIGGERS):
@@ -106,15 +174,24 @@ def extract_from_text(text: str, source_persona: str) -> List[Dict[str, Any]]:
         if len(s) < 8 or len(s) > 300:
             continue
         ok, conf = _actionable(s)
+        if not ok and _has_assignment_cue(s):
+            ok, conf = True, 0.7   # assignment-phrased instruction is actionable too
         if not ok:
             continue
         # Skip exact duplicates that are still pending (light guard, not full dedup).
         if any(t["description"].lower() == s.lower() and t["status"] == "pending" for t in PENDING_TASKS):
             continue
+        assigned_to, assignment_type = _detect_assignment(s, source_persona)
+        if assigned_to is None:
+            assigned_to = _infer_assignee(s)        # always fall back, never blocks
+            assignment_type = "inferred"
         task = {
             "id": "task_" + uuid.uuid4().hex[:8],
             "description": s,
             "source_persona": source_persona,
+            "assigned_by": source_persona,
+            "assigned_to": assigned_to,
+            "assignment_type": assignment_type,
             "type": _classify(s),
             "confidence": round(conf, 2),
             "status": "pending",
@@ -159,6 +236,11 @@ def approve_task(req: ApproveReq):
         if req.description:
             task["description"] = req.description.strip()
             task["type"] = _classify(task["description"])  # re-classify edited text
+            at, atype = _detect_assignment(task["description"], task["source_persona"])
+            if at is None:
+                at, atype = _infer_assignee(task["description"]), "inferred"
+            task["assigned_to"] = at
+            task["assignment_type"] = atype
         task["status"] = "pending"
     else:
         raise HTTPException(status_code=400, detail="decision must be approve, reject, or modify.")
@@ -195,7 +277,8 @@ def _infer_handler(action: str) -> str:
     return "generate_code"
 
 
-def _make_node(action: str, handler: Optional[str] = None, deps: Optional[List[str]] = None) -> Dict[str, Any]:
+def _make_node(action: str, handler: Optional[str] = None, deps: Optional[List[str]] = None,
+               owner: Optional[str] = None) -> Dict[str, Any]:
     h = handler if handler in ALLOWED_HANDLERS else _infer_handler(action)
     return {
         "id": "node_" + uuid.uuid4().hex[:8],
@@ -205,6 +288,7 @@ def _make_node(action: str, handler: Optional[str] = None, deps: Optional[List[s
         "dependencies": deps or [],
         "children": [],
         "type": "atomic",
+        "owner": owner,            # inherited from the DAG's assigned_to
         "result": None,
     }
 
@@ -254,12 +338,15 @@ def dag_create(req: DagCreateReq):
     if task["status"] != "approved":
         raise HTTPException(status_code=400, detail="Approve the task before building a DAG.")
 
-    root = _make_node(task["description"])
+    owner = task.get("assigned_to")
+    root = _make_node(task["description"], owner=owner)
     dag = {
         "id": "dag_" + uuid.uuid4().hex[:8],
         "goal": task["description"],
         "status": "pending",
         "task_id": task["id"],
+        "assigned_to": owner,
+        "assigned_by": task.get("assigned_by"),
         "nodes": [root],
         "root_id": root["id"],
     }
@@ -348,7 +435,9 @@ async def dag_expand(req: DagExpandReq):
     children: List[str] = []
     prev_id: Optional[str] = None
     for st in steps:
-        child = _make_node(st["action"], st.get("handler") or None, deps=[prev_id] if prev_id else [])
+        child = _make_node(st["action"], st.get("handler") or None,
+                           deps=[prev_id] if prev_id else [],
+                           owner=node.get("owner"))  # inherit ownership down the DAG
         prev_id = child["id"]
         dag["nodes"].append(child)
         children.append(child["id"])
@@ -380,52 +469,58 @@ def _sanitize_filename(name: str) -> str:
     return name or "output.txt"
 
 
-async def _handler_generate_code(node, dag, model) -> str:
+def _actor_prefix(context: Optional[Dict[str, Any]]) -> str:
+    """Role-aware preamble built from the execution context (node owner)."""
+    actor = (context or {}).get("actor")
+    return f"You are acting as the {actor}. " if actor else ""
+
+
+async def _handler_generate_code(node, dag, model, context=None) -> str:
     return await _ollama_chat(
-        [{"role": "system", "content": "You are a senior engineer. Produce the code for the requested step with a one-line explanation. Be concise."},
+        [{"role": "system", "content": _actor_prefix(context) + "You are a senior engineer. Produce the code for the requested step with a one-line explanation. Be concise."},
          {"role": "user", "content": node["action"]}],
         model, temperature=0.3,
     )
 
 
-async def _handler_analyze_repo(node, dag, model) -> str:
+async def _handler_analyze_repo(node, dag, model, context=None) -> str:
     # Read-only: reuse the loaded Project Mode context if present.
-    context = ""
+    proj_ctx = ""
     try:
         import main  # lazy import avoids circular import at module load
-        context = main._project_context(0)
+        proj_ctx = main._project_context(0)
     except Exception:
-        context = ""
-    if not context:
+        proj_ctx = ""
+    if not proj_ctx:
         return "No project is loaded in Project Mode, so there is nothing to analyze. Load a repo first."
     return await _ollama_chat(
-        [{"role": "system", "content": "You are a code reviewer. Analyze the project context for the requested step. Cite files. Be concise."},
-         {"role": "user", "content": f"{context}\n\nStep: {node['action']}"}],
+        [{"role": "system", "content": _actor_prefix(context) + "You are a code reviewer. Analyze the project context for the requested step. Cite files. Be concise."},
+         {"role": "user", "content": f"{proj_ctx}\n\nStep: {node['action']}"}],
         model, temperature=0.3,
     )
 
 
-async def _handler_run_report(node, dag, model) -> str:
+async def _handler_run_report(node, dag, model, context=None) -> str:
     return await _ollama_chat(
-        [{"role": "system", "content": "You are an analyst. Produce a short structured report for the requested step. No code execution."},
+        [{"role": "system", "content": _actor_prefix(context) + "You are an analyst. Produce a short structured report for the requested step. No code execution."},
          {"role": "user", "content": node["action"]}],
         model, temperature=0.4,
     )
 
 
-async def _handler_research(node, dag, model) -> str:
+async def _handler_research(node, dag, model, context=None) -> str:
     return await _ollama_chat(
-        [{"role": "system", "content": "You are a research assistant. Answer the research question from your knowledge. State assumptions. Be concise. (No live internet access.)"},
+        [{"role": "system", "content": _actor_prefix(context) + "You are a research assistant. Answer the research question from your knowledge. State assumptions. Be concise. (No live internet access.)"},
          {"role": "user", "content": node["action"]}],
         model, temperature=0.5,
     )
 
 
-async def _handler_create_files(node, dag, model) -> str:
+async def _handler_create_files(node, dag, model, context=None) -> str:
     # Generate a single file's content, then write it ONLY inside the sandboxed
     # per-DAG output directory (path-sanitized). Contained, never arbitrary.
     raw = await _ollama_chat(
-        [{"role": "system", "content": (
+        [{"role": "system", "content": _actor_prefix(context) + (
             "Produce one file to satisfy the step. Respond ONLY as JSON: "
             '{"filename": "<name.ext>", "content": "<file contents>"}.')},
          {"role": "user", "content": node["action"]}],
@@ -491,8 +586,10 @@ async def dag_execute(req: DagExecuteReq):
 
     handler = _HANDLERS.get(node["handler"], _handler_generate_code)
     node["status"] = "running"
+    # Execution context — lets handlers be role-aware without changing call sites.
+    context = {"actor": node.get("owner"), "task_goal": dag.get("goal")}
     try:
-        result = await handler(node, dag, req.model)
+        result = await handler(node, dag, req.model, context)
     except HTTPException as e:
         node["status"] = "pending"
         raise e
